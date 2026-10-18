@@ -1,0 +1,127 @@
+# Example Leonidas of the Web config for a small local web-design studio.
+# Every name, address, email and price here is a PLACEHOLDER: replace them with your own.
+# Validate with:  leonidas config check examples/local-web-agency.yaml
+# The SMTP password is never stored here: export LEONIDAS_SMTP_PASSWORD=...
+sender:
+  name: Your Name
+  company: Example Web Studio
+  email: you@example.com
+  physicalAddress: "123 Main St, Suite 100, Your City, ST 00000"
+  role: Founder
+  tone: "Friendly, plain-spoken, reassuring, simple"
+compliance:
+  unsubscribe:
+    url: ""
+    mailto: unsubscribe@example.com
+product:
+  name: Done-for-you websites for local businesses
+  description: "Example Web Studio designs, builds, hosts and maintains custom websites for small businesses, delivered live in 5 to 10 days. Each package is one flat, one-time price covering design, a .com domain, managed hosting, SSL and ongoing updates, with no monthly bill for the first year. The service is for local business owners who want to look professional and get found online without needing any technical skills."
+  pricing: "One-time packages with domain, hosting and updates included for year one. Starter: $400 (up to 3 pages, SSL, 6 updates/year, live in 5 days). Business (most popular): $700 (up to 6 pages, booking or quote request form, Google Business Profile + SEO setup, 12 updates/year, live in 7 days). Store: $1000 (up to 9 pages plus an online store with up to 25 products, Stripe card payments, 24 updates/year, live in 10 days). After year one, an optional renewal plan keeps domain, hosting and updates going. Upgrades only cost the difference between packages."
+  keyBenefits:
+    - Launch a professional website in 5 to 10 days instead of waiting weeks or months
+    - Get your business online for one affordable upfront price instead of paying thousands to an agency
+    - "Pay $0 in monthly website subscription bills during your first year"
+    - Know what you are paying before you commit with clear package pricing and included services
+    - Get the website built for you instead of spending nights and weekends trying to do it yourself
+    - "No coding, design experience or technical skills needed to get started"
+    - Make a strong first impression when someone searches for your business online
+    - Make it easy for potential customers to understand what you do and why they should choose you
+    - Give mobile visitors a website that is easy to view and navigate on their phones
+    - Make it easier for customers to request appointments or quotes with the Business package
+    - Get domain registration and hosting included in your first-year package
+    - Review and approve your website design before it goes live
+    - Have a real person to contact instead of figuring out every website issue by yourself
+  objectionResponses:
+    "I need to think about it.": "Of course. It's a business decision, and you should feel good about it. Rather than follow up with another sales pitch, can I ask what you still need to evaluate: the price, the design quality, the support, or whether a website is worth doing right now?"
+    "I'll get back to you.": "Absolutely. I can send a simple summary of the package, what's included, the first-year cost, and the renewal information so you have everything in one place. Would you rather receive that by text or email?"
+    "I need to discuss this with my partner.": "That makes sense. A shared business expense deserves a shared decision. I can put together a clear comparison of your options, including costs and limitations, so both of you can make an informed choice. What question do you think your partner will ask first?"
+    "I don't like being rushed into decisions.": "Neither do I. You deserve enough information to make a good choice without artificial deadlines. Let's review what you receive, how much you'll pay, and what happens after launch. What would you still need to know to make a confident decision?"
+    "Will I rank on the first page of Google?": "No responsible provider can guarantee that. Business includes initial SEO setup, but rankings depend on competition, content and Google's systems, and indexing itself isn't guaranteed. Which services and locations would you most want to be found for?"
+    "Does a website automatically generate leads?": "Not automatically. It can make it easier for interested visitors to request a quote, book, call, or buy, but people still have to find the site and trust your offer. Our job is to make that next step clear within your package's features. Where would you expect your first website visitors to come from?"
+    "Can you guarantee more phone calls?": "I can't honestly guarantee that. A website can give visitors an easy way to call or request information, but the number of inquiries depends on many things. I'd rather set a realistic goal and help you understand the path from visitor to customer. How do people usually contact you today?"
+    "My competitors have huge expensive websites.": "That doesn't mean you need to match their spending. You need a site that explains why the right customer should choose you and makes it easy to take the next step. A small business can communicate clearly without an enormous website. What do your best customers appreciate most about working with you?"
+    "What if I lose my business email when we switch?": "That's a legitimate concern, and we'd need to review your existing domain records and email provider before making any changes. Website hosting and email hosting are connected through domain settings but aren't necessarily the same service. We should plan any transition carefully. Which email service are you using now?"
+    "Can I keep my current domain?": "Often yes, provided you control the domain and it can be connected to the new site. We'd confirm where it's registered and any restrictions before proceeding. You shouldn't have to change a name your customers already know without a good reason. Do you know who currently manages your domain?"
+    "How many changes do I get after launch?": "For the first year, Starter includes 6 defined updates, Business includes 12, and Store includes 24. New features and major redesigns may fall outside routine updates; scope and turnaround should be confirmed in writing. What changes will you make most often?"
+    "Can people pay online?": "Our Store package includes Stripe integration for its supported ecommerce setup. Payment-processing fees may apply separately, and more specialized payment features should be scoped before purchase. Are you trying to sell products, collect deposits, or accept payments for services?"
+    "I'm not good with technology.": "You don't have to become a web designer to run a business. Our done-for-you approach is meant to reduce the technical work involved in launching. We will still explain anything you'll need to maintain or approve. Would you prefer to communicate with us by phone, text, or email?"
+    "I'm a one-person business. Isn't a website too much?": "Not if it's kept appropriately simple, but you shouldn't buy more than you need. A basic site can just explain your services, show your work, and make contacting you easy. The $400 Starter package may be enough depending on your requirements. What's the main question customers ask before hiring you?"
+    "Why should I buy from you today?": "You should buy only if the package fits your needs, the cost is comfortable, and you've reviewed the terms. We offer affordable, AI-assisted, done-for-you website creation with defined first-year services and access to a real team. I don't need to invent urgency to make that worthwhile. What information would help you decide whether we're the right fit?"
+    "What's the catch?": "It's smart to ask. We keep costs down with AI-assisted production and clearly defined packages rather than treating each small-business site like an unlimited custom project. Some advanced features may need separate quotes, and services such as domain registration and hosting have renewal considerations after year one. What part of the offer would you most like me to explain in detail?"
+    "Why are you asking so many questions instead of just showing me prices?": "Fair point. The first-year package prices are Starter $400, Business $700, and Store $1000. You do not need to answer more questions to see the pricing. Would you prefer a quick package comparison, or a recommendation based on what your website must do?"
+    "Can you show me the prices without asking for my contact information?": "Of course. Starter is $400, Business is $700 and Store is $1000 for their defined first-year packages. You don't need to share contact details just to compare them. Would you like a quick feature-by-feature breakdown?"
+    "Are you a real person or an AI assistant?": "I'm an AI assistant for Example Web Studio. I can explain the packages and help you compare options, and I can connect you with the team for anything that needs a human answer. What would be most useful to know?"
+    "Do you have examples from my industry?": "I can only show genuine portfolio examples that the team has approved for sharing. If we don't have one from your industry, I'll say so and show a relevant alternative. What's your industry and the style you're looking for?"
+    "Can your team guarantee accessibility or legal compliance?": "We aim for usable sites, but legal and accessibility requirements vary by business and location. I can't guarantee formal compliance unless it's explicitly included and verified in a contract. Are there particular accessibility, privacy or industry requirements we should scope first?"
+offer:
+  primary: "Recommend the least expensive suitable package: Starter $400 for an essential informational site, Business $700 when quote or booking requests, initial SEO or eligible Google Business Profile setup are needed, Store $1000 for a supported online catalog and Stripe checkout. Confirm what the buyer needs first, never oversell. Each price covers its specified initial build and first-year services, not lifetime hosting."
+  entry: "Starter: $400 upfront, up to 3 pages, SSL, 6 defined first-year updates and about 5-day launch target after required materials and approval."
+  goal: get_reply
+  bookingMethod: ask_preference
+  bookingUrl: ""
+  meetingOwner: Your Name
+  meetingDurationMinutes: 10
+icp:
+  industries:
+    - restaurant
+    - contractor
+    - landscaping
+    - plumbing
+    - cleaning service
+    - salon
+    - auto repair
+    - boutique
+    - fitness studio
+    - photographer
+  titles:
+    - Owner
+    - Founder
+    - Co-Founder
+    - President
+    - Managing Partner
+    - Proprietor
+  companySize: "1-20"
+  geography:
+    - United States
+    - Your State
+    - Your City
+sending:
+  mode: draft
+  transport: smtp
+  smtp:
+    host: mail.example.com
+    port: 465
+    user: you@example.com
+    passwordEnv: LEONIDAS_SMTP_PASSWORD
+  dailyCap: 20
+  perDomainDailyCap: 3
+  ramp:
+    - 5
+    - 10
+    - 20
+  warmup:
+    enabled: true
+    startDate: ""
+  sendUnverified: false
+  personalizeFirstEmail: true
+  maxBounceRate: 0.02
+  minIntervalSeconds: 180
+  window:
+    start: "09:00"
+    end: "13:00"
+  allowedDays:
+    - Tue
+    - Wed
+  timezone: America/Chicago
+approval:
+  required: true
+  allowAgentApproval: false
+usage:
+  maxDailyBrainPercent: 40
+  heartbeatIntervalMinutes: 15
+  quietHours:
+    start: "22:00"
+    end: "07:00"
+    timezone: America/Chicago
+brain:
+  provider: claude

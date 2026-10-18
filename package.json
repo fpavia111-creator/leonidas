@@ -1,0 +1,58 @@
+{
+  "name": "@kurtfrancisco/leonidas",
+  "version": "0.2.0",
+  "description": "Leonidas of the Web (formerly leadwright): compliance-first outbound sales pipeline as an MCP server for Claude Code, Cursor and Codex. ICP scoring, CAN-SPAM gate, do-not-contact list, warmup ramp, Tue/Wed send window, human approval, built-in SMTP, and a why-was-this-lead-contacted audit log. Based on Harvey by Ethan Rogers.",
+  "license": "MIT",
+  "author": "Kurt Francisco <Fpavia111@gmail.com>",
+  "contributors": [
+    "Ethan Rogers (original Harvey project)"
+  ],
+  "bin": {
+    "leonidas": "bin/leonidas.js",
+    "leadwright": "bin/leadwright.js"
+  },
+  "main": "src/index.js",
+  "files": [
+    "bin/",
+    "src/",
+    "templates/",
+    "skills/",
+    "examples/",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:pro": "node --test pro/leadwright-pro/test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fpavia111-creator/leonidas.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fpavia111-creator/leonidas/issues"
+  },
+  "homepage": "https://github.com/fpavia111-creator/leonidas#readme",
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "cursor",
+    "codex",
+    "sales",
+    "cold-email",
+    "outbound",
+    "can-spam",
+    "deliverability",
+    "agent",
+    "smtp",
+    "cpanel",
+    "leonidas"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
