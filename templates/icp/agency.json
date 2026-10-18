@@ -1,0 +1,29 @@
+{
+  "id": "agency",
+  "label": "Marketing & creative agencies",
+  "industries": [
+    "Marketing Agency",
+    "Advertising",
+    "Design Agency"
+  ],
+  "titles": [
+    "Founder",
+    "Managing Director",
+    "Head of Operations"
+  ],
+  "companySize": "5-50",
+  "signals": [
+    "new client logos",
+    "hiring account managers",
+    "case study published"
+  ],
+  "disqualifiers": [
+    "in-house team"
+  ],
+  "exampleSubjects": [
+    "Your new case study",
+    "Client reporting"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}

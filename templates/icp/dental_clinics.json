@@ -1,0 +1,31 @@
+{
+  "id": "dental_clinics",
+  "label": "Dental & outpatient clinics",
+  "industries": [
+    "Dental",
+    "Orthodontics",
+    "Physical Therapy",
+    "Chiropractic"
+  ],
+  "titles": [
+    "Practice Owner",
+    "Practice Manager",
+    "Office Manager"
+  ],
+  "companySize": "3-40",
+  "signals": [
+    "new location",
+    "hiring front desk",
+    "no online scheduling"
+  ],
+  "disqualifiers": [
+    "hospital system"
+  ],
+  "exampleSubjects": [
+    "New patient forms",
+    "Your second location"
+  ],
+  "notes": "Never request or reference patient data (HIPAA).",
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}
