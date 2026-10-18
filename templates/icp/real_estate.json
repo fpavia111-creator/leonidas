@@ -1,0 +1,28 @@
+{
+  "id": "real_estate",
+  "label": "Real estate brokerages & property managers",
+  "industries": [
+    "Real Estate",
+    "Property Management"
+  ],
+  "titles": [
+    "Broker/Owner",
+    "Managing Broker",
+    "Property Manager"
+  ],
+  "companySize": "3-100",
+  "signals": [
+    "new listings volume",
+    "recruiting agents",
+    "new office"
+  ],
+  "disqualifiers": [
+    "solo agent"
+  ],
+  "exampleSubjects": [
+    "Agent onboarding",
+    "Your new office"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}

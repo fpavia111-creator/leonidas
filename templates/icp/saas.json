@@ -1,0 +1,32 @@
+{
+  "id": "saas",
+  "label": "B2B SaaS (10-200 employees)",
+  "industries": [
+    "SaaS",
+    "Software"
+  ],
+  "titles": [
+    "VP Marketing",
+    "Head of Growth",
+    "CMO",
+    "Founder",
+    "CEO"
+  ],
+  "companySize": "10-200",
+  "signals": [
+    "hiring growth/marketing roles",
+    "recent funding",
+    "new pricing page",
+    "product launch"
+  ],
+  "disqualifiers": [
+    "agency",
+    "freelancer"
+  ],
+  "exampleSubjects": [
+    "Your pricing page",
+    "Growth hire at {company}"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}
