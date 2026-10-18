@@ -1,0 +1,31 @@
+{
+  "id": "professional_services",
+  "label": "Accounting, legal & consulting firms",
+  "industries": [
+    "Accounting",
+    "Law Firm",
+    "Consulting",
+    "Bookkeeping"
+  ],
+  "titles": [
+    "Managing Partner",
+    "Partner",
+    "Firm Administrator",
+    "Operations Director"
+  ],
+  "companySize": "5-100",
+  "signals": [
+    "tax-season hiring",
+    "new practice area",
+    "partner promotion"
+  ],
+  "disqualifiers": [
+    "solo practitioner"
+  ],
+  "exampleSubjects": [
+    "Tax season intake",
+    "New practice area"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}

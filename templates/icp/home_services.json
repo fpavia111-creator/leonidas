@@ -1,0 +1,32 @@
+{
+  "id": "home_services",
+  "label": "Local home services (HVAC, plumbing, roofing, landscaping)",
+  "industries": [
+    "HVAC",
+    "Plumbing",
+    "Roofing",
+    "Landscaping",
+    "Electrical"
+  ],
+  "titles": [
+    "Owner",
+    "Operations Manager",
+    "Office Manager"
+  ],
+  "companySize": "3-50",
+  "signals": [
+    "no online booking",
+    "seasonal hiring",
+    "new service area",
+    "low review response rate"
+  ],
+  "disqualifiers": [
+    "franchise HQ"
+  ],
+  "exampleSubjects": [
+    "Booking on your site",
+    "Spring schedule"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}

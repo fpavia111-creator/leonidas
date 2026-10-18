@@ -1,0 +1,31 @@
+{
+  "id": "manufacturing",
+  "label": "Small & mid-size manufacturers",
+  "industries": [
+    "Manufacturing",
+    "Industrial",
+    "Machining",
+    "Fabrication"
+  ],
+  "titles": [
+    "Plant Manager",
+    "Operations Director",
+    "VP Operations",
+    "Owner"
+  ],
+  "companySize": "20-500",
+  "signals": [
+    "new equipment",
+    "ISO certification",
+    "hiring production roles"
+  ],
+  "disqualifiers": [
+    "distributor only"
+  ],
+  "exampleSubjects": [
+    "Your ISO renewal",
+    "Second shift hiring"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}

@@ -1,0 +1,30 @@
+{
+  "id": "ecommerce",
+  "label": "DTC e-commerce brands",
+  "industries": [
+    "E-commerce",
+    "Retail",
+    "Consumer Goods"
+  ],
+  "titles": [
+    "Founder",
+    "Head of E-commerce",
+    "Head of Growth",
+    "Marketing Manager"
+  ],
+  "companySize": "5-150",
+  "signals": [
+    "Shopify store",
+    "new product line",
+    "hiring retention marketer"
+  ],
+  "disqualifiers": [
+    "marketplace-only seller"
+  ],
+  "exampleSubjects": [
+    "Your new collection",
+    "Repeat orders"
+  ],
+  "minScore": 50,
+  "bodyMaxWordsExclusive": 100
+}
