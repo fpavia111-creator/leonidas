@@ -116,6 +116,8 @@ Pro is sold separately. The core in this repo is MIT and fully usable without it
 
 **[Buy Leonidas Pro: $11 one-time →](https://buy.stripe.com/3cI8wR5LzbZw0lR0md5AQ04)**
 
+After checkout, your license key is shown on the order confirmation page. Save it there; it is emailed too only if email delivery is configured. Set it as `LEONIDAS_LICENSE_KEY`.
+
 ## Legal
 Leonidas helps you follow the rules, but it isn't legal advice. You're responsible for complying with CAN-SPAM, CASL, GDPR/PECR and your mail provider's terms.
 
