@@ -123,3 +123,8 @@ Leonidas helps you follow the rules, but it isn't legal advice. You're responsib
 
 ## License
 MIT. Copyright (c) 2026 Ethan Rogers (original Harvey) and Copyright (c) 2026 Kurt Francisco (modifications). See [LICENSE](LICENSE).
+
+
+---
+
+Need an AI agent built for your business instead of tools to build your own? See [G6daddy](https://g6daddy.com/): AI agents for any industry.
