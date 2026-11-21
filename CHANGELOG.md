@@ -2,6 +2,9 @@
 
 ## Unreleased
 ### Added
+- Reading replies over IMAP (`inbox.accounts`, `leonidas inbox check`, MCP `leo_check_inbox`). Read-only: mail is opened with EXAMINE and fetched with BODY.PEEK. Each account's inbox and spam/junk folders are checked (`checkSpam`, or an explicit `folders` list). Each message is sorted with Harvey's opt-out and escalation rules plus phishing, bounce, auto-reply and newsletter checks. Opt-outs are suppressed, bounces recorded, and a replying lead's pending cold mail is pulled.
+- Answering replies: `leo_queue_reply` / `leonidas inbox reply` (threaded with In-Reply-To/References, sent from the mailbox the person wrote to) and `leo_mark_inbox` / `inbox close|escalate`. With `inbox.autoReply: true`, safe replies to people are sent without review, limited by `inbox.autoReplyTo`, `inbox.maxAutoRepliesPerDay` and a two-per-person-per-day loop guard. `leonidas inbox test` checks every login.
+- Replies are not held to the Tue/Wed rule or the send window, which are for cold email.
 - Several sending mailboxes: `sending.mailboxes` (each with its own password env var, daily cap and warmup start), `sending.totalDailyCap` and `sending.hourlyCap` (all mailboxes together). Mail goes from the least-used mailbox with room. A recipient always hears from the same mailbox. `leonidas status` shows each mailbox.
 - Each send and bounce records the mailbox it came from.
 - `leonidas mailboxes test` logs in to every sending mailbox and logs out, without sending anything.
