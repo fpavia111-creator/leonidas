@@ -23,6 +23,7 @@ Usage: leonidas <command> [args]   ("leadwright" still works but is deprecated)
   approve <msgId> [note]         HUMAN approval of one message
   reject <msgId> [reason]
   send                           deliver approved mail that passes every check
+  send --watch [seconds]         keep running: try again every N seconds (default 10), sending as limits allow (Ctrl+C stops)
   suppress <email|domain> [why]  add to do-not-contact list
   unsuppress <email|domain>
   bounce <email> [code] [diag]   record a bounce (hard -> auto-suppress)
@@ -30,9 +31,38 @@ Usage: leonidas <command> [args]   ("leadwright" still works but is deprecated)
   audit [--verify]               audit log / hash-chain check
   dns <domain> [dkimSelector]    SPF / DMARC / DKIM check
   config check [file]            validate a config (.json/.yaml; default $LEONIDAS_CONFIG or .leonidas/config.*)
+  mailboxes test                 log in to every sending mailbox over SMTP and log out (sends nothing)
   import-harvey <in.yaml> [out]  convert a Harvey-style YAML config to Leonidas YAML (stdout if no out)`;
 
 const out = x => console.log(typeof x === 'string' ? x : JSON.stringify(x, null, 2));
+
+/**
+ * `send --watch`: a long-running sender. Each pass reloads the config and, unless a limit
+ * holds every message (window, quiet hours, caps, send interval, bounce pause), runs one
+ * send pass. Prints only deliveries, failures and changes of the waiting reason.
+ */
+async function watchSend(seconds, { passes = Infinity, log = console.log, now } = {}) {
+  const { canSend } = require('../src/deliverability');
+  const every = Math.max(1, Number(seconds) || 10) * 1000;
+  let last = '';
+  for (let n = 0; n < passes; n++) {
+    if (n) await new Promise(r => setTimeout(r, every));
+    const lw = new Leadwright({ cfg: loadConfig(), now });
+    const at = lw.now();
+    const waiting = lw.outbox().some(m => m.status === 'approved' || m.status === 'scheduled');
+    const cs = canSend(lw.cfg, { sendLog: lw.sendLog(), bounces: lw.bounces(), email: 'x@example.invalid', now: at });
+    const idle = !waiting ? 'nothing approved to send' : cs.global.length ? `waiting: ${cs.global[0]}` : '';
+    if (idle) {
+      if (idle.replace(/\d+/g, '#') !== last) log(`${at.toISOString()} ${idle}`);
+      last = idle.replace(/\d+/g, '#');
+      continue;
+    }
+    last = '';
+    for (const r of lw.sendApproved({ actor: 'human' })) {
+      if (r.status === 'sent' || r.status === 'failed' || r.status === 'retry') log(`${at.toISOString()} ${r.status} ${r.id}${r.mailbox ? ` from ${r.mailbox}` : ''}${r.status !== 'sent' && r.reasons ? `: ${r.reasons.join('; ')}` : ''}`);
+    }
+  }
+}
 
 async function main(argv) {
   const [cmd, ...a] = argv;
@@ -73,6 +103,26 @@ async function main(argv) {
     return process.stdout.write(text);
   }
   if (cmd === 'dns') return out(await checkDomainAuth(a[0], { dkimSelector: a[1] }));
+  if (cmd === 'mailboxes' && a[0] === 'test') {
+    const { mailboxes } = require('../src/deliverability');
+    const { resolveSmtp, verifyLogin } = require('../src/smtp');
+    const cfg = loadConfig();
+    if (cfg.sending.transport !== 'smtp') throw new Error('sending.transport is not "smtp": there is no mailbox to log in to');
+    const d = a.indexOf('--delay'), delay = d >= 0 ? Number(a[d + 1]) || 0 : 2000; // shared hosts throttle rapid logins
+    const list = mailboxes(cfg);
+    let bad = 0;
+    for (const [n, mb] of list.entries()) {
+      if (n && delay) await new Promise(r => setTimeout(r, delay));
+      const smtp = resolveSmtp({ sending: { smtp: mb.smtp } });
+      try {
+        const r = await verifyLogin(smtp);
+        out(`ok    ${mb.email}  (${smtp.host}:${smtp.port}${r.encrypted ? ', encrypted' : ''})`);
+      } catch (e) { bad++; out(`FAIL  ${mb.email}  (${smtp.host}:${smtp.port}) ${e.message}`); }
+    }
+    out(`${list.length - bad}/${list.length} mailboxes can log in. Nothing was sent.`);
+    if (bad) process.exitCode = 1;
+    return;
+  }
   const lw = new Leadwright({ cfg: loadConfig() });
   switch (cmd) {
     case 'status': return out(lw.status());
@@ -82,7 +132,7 @@ async function main(argv) {
     case 'show': { const m = lw.outbox().find(x => x.id === a[0]); if (!m) throw new Error('unknown message'); return out(`To: ${m.to}\nSubject: ${m.subject}\nWhy: ${m.why}\nStatus: ${m.status}\nWarnings: ${m.gate.warnings.join('; ') || '-'}\n\n${m.body}`); }
     case 'approve': return out(lw.approve(a[0], { actor: 'human', note: a.slice(1).join(' ') }).status);
     case 'reject': return out(lw.reject(a[0], { actor: 'human', reason: a.slice(1).join(' ') || 'rejected' }).status);
-    case 'send': return out(lw.sendApproved({ actor: 'human' }));
+    case 'send': return a[0] === '--watch' ? watchSend(a[1]) : out(lw.sendApproved({ actor: 'human' }));
     case 'suppress': return out(lw.suppress(a[0], { reason: a.slice(1).join(' ') || 'manual', actor: 'human' }));
     case 'unsuppress': { const n = lw.suppression.remove(a[0]); lw.audit.record({ action: 'unsuppressed', actor: 'human', reason: `removed ${a[0]}` }); return out(`removed ${n}`); }
     case 'bounce': return out(lw.recordBounce({ email: a[0], code: a[1], diagnostic: a.slice(2).join(' '), actor: 'human' }));
@@ -92,5 +142,5 @@ async function main(argv) {
   }
 }
 
-module.exports = { main };
+module.exports = { main, watchSend };
 if (require.main === module) main(process.argv.slice(2)).catch(e => { console.error(`leonidas: ${e.message}`); process.exitCode = 1; });

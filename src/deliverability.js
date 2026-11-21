@@ -10,17 +10,82 @@ function daysBetween(a, b) {
   return Math.floor((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 86400000);
 }
 
-/** Effective cap for today = min(dailyCap, warmup ramp). */
-function effectiveDailyCap(cfg, today) {
+/** min(dailyCap, warmup ramp counted from startDate). */
+function rampedCap(cfg, today, dailyCap, startDate) {
   const s = cfg.sending;
-  if (!s.warmup || !s.warmup.enabled) return s.dailyCap;
-  const start = s.warmup.startDate || today;
+  if (!s.warmup || !s.warmup.enabled) return dailyCap;
+  const start = startDate || today;
   const n = Math.max(0, daysBetween(start, today));
   if (Array.isArray(s.ramp) && s.ramp.length) {
     // Explicit ramp: day 1 -> ramp[0], day 2 -> ramp[1], ... then dailyCap.
-    return Math.min(s.dailyCap, n < s.ramp.length ? s.ramp[n] : s.dailyCap);
+    return Math.min(dailyCap, n < s.ramp.length ? s.ramp[n] : dailyCap);
   }
-  return Math.min(s.dailyCap, s.warmup.startPerDay + n * s.warmup.incrementPerDay);
+  return Math.min(dailyCap, s.warmup.startPerDay + n * s.warmup.incrementPerDay);
+}
+
+/** Effective cap for today = min(dailyCap, warmup ramp). */
+function effectiveDailyCap(cfg, today) {
+  return rampedCap(cfg, today, cfg.sending.dailyCap, cfg.sending.warmup && cfg.sending.warmup.startDate);
+}
+
+/**
+ * Sending mailboxes. `sending.mailboxes` is a pool: each entry is {email, user?, name?, passwordEnv?,
+ * host?, port?, secure?, dailyCap?, warmupStartDate?}; server settings default to sending.smtp and the
+ * password env var to sending.smtp.passwordEnv. Without a pool there is one mailbox: sender.email
+ * over sending.smtp, exactly as before.
+ */
+function mailboxes(cfg) {
+  const s = cfg.sending, base = s.smtp || {};
+  const list = Array.isArray(s.mailboxes) ? s.mailboxes : [];
+  if (!list.length) return [{ email: cfg.sender.email, name: cfg.sender.name, smtp: base, dailyCap: s.dailyCap, warmupStartDate: (s.warmup && s.warmup.startDate) || '', pooled: false }];
+  return list.map(mb => {
+    const smtp = { ...base, user: mb.user || mb.email, passwordEnv: mb.passwordEnv || base.passwordEnv };
+    for (const k of ['host', 'port', 'secure']) if (mb[k] !== undefined && mb[k] !== '') smtp[k] = mb[k];
+    if (mb.port !== undefined && mb.port !== '' && (mb.secure === undefined || mb.secure === '')) smtp.secure = null; // derive TLS mode from this mailbox's port
+    return { email: String(mb.email || '').trim().toLowerCase(), name: mb.name || cfg.sender.name, smtp, dailyCap: typeof mb.dailyCap === 'number' && Number.isFinite(mb.dailyCap) ? mb.dailyCap : s.dailyCap, warmupStartDate: mb.warmupStartDate || (s.warmup && s.warmup.startDate) || '', pooled: true };
+  });
+}
+
+/** Today's cap for one mailbox (its dailyCap, ramped from its own warmup start). */
+function mailboxCap(cfg, mb, today) { return rampedCap(cfg, today, mb.dailyCap, mb.warmupStartDate); }
+
+/** Sends allowed today across all mailboxes: the sum of their caps, limited by sending.totalDailyCap if set. */
+function poolCapacity(cfg, today) {
+  const sum = mailboxes(cfg).reduce((n, mb) => n + mailboxCap(cfg, mb, today), 0);
+  const total = Number(cfg.sending.totalDailyCap) || 0;
+  return total > 0 ? Math.min(total, sum) : sum;
+}
+
+/** Which mailbox a send-log row went out from (rows written before pools existed have none). */
+function rowMailbox(cfg, r) { return String(r.mailbox || cfg.sender.email || '').toLowerCase(); }
+
+/**
+ * Pick the mailbox for one message: the one that last wrote to this recipient (so a thread stays
+ * in one inbox), else the least-used mailbox today with room under its cap. `exclude` maps
+ * mailbox email -> reason it can't be used this run. Returns {mailbox, reason}.
+ */
+function pickMailbox(cfg, { sendLog, now = new Date(), to, exclude = new Map() }) {
+  const pool = mailboxes(cfg);
+  if (!pool[0].pooled) return exclude.has(pool[0].email) ? { mailbox: null, reason: `mailbox ${pool[0].email} can't send right now (${exclude.get(pool[0].email)})` } : { mailbox: pool[0], reason: null };
+  const day = dayKey(now, cfg.sending.timezone);
+  const today = sendLog.filter(r => r.day === day && r.status === 'sent');
+  const used = mb => today.filter(r => rowMailbox(cfg, r) === mb.email).length;
+  const room = mb => used(mb) < mailboxCap(cfg, mb, day);
+  const rcpt = String(to || '').toLowerCase();
+  const prior = sendLog.filter(r => r.status === 'sent' && String(r.to || '').toLowerCase() === rcpt && r.mailbox).pop();
+  const sticky = prior && pool.find(mb => mb.email === rowMailbox(cfg, prior));
+  if (sticky) {
+    if (exclude.has(sticky.email)) return { mailbox: null, reason: `${to} was emailed from ${sticky.email}, which can't send right now (${exclude.get(sticky.email)})` };
+    if (!room(sticky)) return { mailbox: null, reason: `${to} was emailed from ${sticky.email}, which is at its daily cap (${used(sticky)}/${mailboxCap(cfg, sticky, day)})` };
+    return { mailbox: sticky, reason: null };
+  }
+  const free = pool.filter(mb => !exclude.has(mb.email) && room(mb));
+  if (!free.length) {
+    const down = pool.filter(mb => exclude.has(mb.email)).length;
+    return { mailbox: null, reason: `no mailbox can send: ${pool.length - down} at their daily cap${down ? `, ${down} unavailable` : ''}` };
+  }
+  free.sort((a, b) => used(a) - used(b));
+  return { mailbox: free[0], reason: null };
 }
 
 /** Minutes since midnight of `d` in tz. */
@@ -92,27 +157,35 @@ function canSend(cfg, { sendLog, bounces, email, now = new Date(), recipientTz }
     sendAfter = nextAllowedDay(cfg, now, tz);
     reasons.push(`not an allowed send day: cold email only goes out on ${allowedDays(cfg).join('/')} (${tz}); queued for ${sendAfter}`);
   }
+  // `global` collects limits that hold every message right now, whoever it is for.
+  const global = [];
   const day = dayKey(now, cfg.sending.timezone);
-  const cap = effectiveDailyCap(cfg, day);
+  const cap = poolCapacity(cfg, day);
   const today = sendsOn(sendLog, day);
-  if (today.length >= cap) reasons.push(`daily cap reached (${today.length}/${cap}${cfg.sending.warmup.enabled ? ', warmup' : ''})`);
+  if (today.length >= cap) global.push(`daily cap reached (${today.length}/${cap}${cfg.sending.warmup.enabled ? ', warmup' : ''})`);
+  const hourly = Number(cfg.sending.hourlyCap) || 0;
+  if (hourly > 0) {
+    const lastHour = sendLog.filter(r => r.status === 'sent' && r.ts && now.getTime() - Date.parse(r.ts) < 3600000).length;
+    if (lastHour >= hourly) global.push(`hourly cap reached (${lastHour}/${hourly} in the last 60 minutes, all mailboxes)`);
+  }
   const domain = String(email).toLowerCase().split('@')[1];
   const perDomain = today.filter(r => (r.to || '').toLowerCase().endsWith('@' + domain)).length;
   if (perDomain >= cfg.sending.perDomainDailyCap) reasons.push(`per-domain cap reached for ${domain} (${perDomain}/${cfg.sending.perDomainDailyCap})`);
   const senderTz = cfg.sending.timezone || HARD_TZ;
   const w = cfg.sending.window || {};
-  if (!sendAfter && inWindow(now, senderTz, w.start, w.end) === false) reasons.push(`outside send window ${w.start}-${w.end} (${senderTz})`);
-  if (isQuietHours(cfg, now)) reasons.push(`quiet hours ${cfg.usage.quietHours.start}-${cfg.usage.quietHours.end}`);
+  if (!sendAfter && inWindow(now, senderTz, w.start, w.end) === false) global.push(`outside send window ${w.start}-${w.end} (${senderTz})`);
+  if (isQuietHours(cfg, now)) global.push(`quiet hours ${cfg.usage.quietHours.start}-${cfg.usage.quietHours.end}`);
   const gap = Number(cfg.sending.minIntervalSeconds) || 0;
   if (gap > 0) {
     const last = sendLog.filter(r => r.status === 'sent' && r.ts).map(r => Date.parse(r.ts)).sort((a, b) => b - a)[0];
-    if (last && (now.getTime() - last) / 1000 < gap) reasons.push(`send interval: ${Math.ceil(gap - (now.getTime() - last) / 1000)}s until next send (min ${gap}s)`);
+    if (last && (now.getTime() - last) / 1000 < gap) global.push(`send interval: ${Math.ceil(gap - (now.getTime() - last) / 1000)}s until next send (min ${gap}s)`);
   }
   const b = bounceStats(sendLog, bounces);
   if (b.sent >= cfg.sending.minSendsForBounceRate && b.rate > cfg.sending.maxBounceRate) {
-    reasons.push(`sending paused: hard-bounce rate ${(b.rate * 100).toFixed(1)}% > ${(cfg.sending.maxBounceRate * 100).toFixed(1)}%`);
+    global.push(`sending paused: hard-bounce rate ${(b.rate * 100).toFixed(1)}% > ${(cfg.sending.maxBounceRate * 100).toFixed(1)}%`);
   }
-  return { ok: reasons.length === 0, reasons, cap, used: today.length, day, sendAfter, dayBlocked: !!sendAfter };
+  reasons.push(...global);
+  return { ok: reasons.length === 0, reasons, global, cap, used: today.length, day, sendAfter, dayBlocked: !!sendAfter };
 }
 
 /** Classify a bounce from an SMTP status/diagnostic string. */
@@ -143,4 +216,4 @@ async function checkDomainAuth(domain, { resolver = dns, dkimSelector } = {}) {
   return out;
 }
 
-module.exports = { HARD_DAYS, HARD_TZ, inWindow, isQuietHours, minutesIn, WEEKDAYS, weekdayIn, allowedDays, isAllowedDay, nextAllowedDay, dayKey, daysBetween, effectiveDailyCap, canSend, bounceStats, classifyBounce, checkDomainAuth };
+module.exports = { HARD_DAYS, HARD_TZ, inWindow, isQuietHours, minutesIn, WEEKDAYS, weekdayIn, allowedDays, isAllowedDay, nextAllowedDay, dayKey, daysBetween, effectiveDailyCap, mailboxes, mailboxCap, poolCapacity, rowMailbox, pickMailbox, canSend, bounceStats, classifyBounce, checkDomainAuth };

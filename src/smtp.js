@@ -25,17 +25,34 @@ function resolveSmtp(cfg) {
   return s;
 }
 
-/** Config problems that block SMTP delivery. */
-function smtpProblems(cfg, env = process.env) {
-  const s = resolveSmtp(cfg), p = [];
-  const raw = (cfg.sending && cfg.sending.smtp) || {};
-  if ('password' in raw || 'pass' in raw) p.push('sending.smtp.password must not be in the config file; put it in the env var named by sending.smtp.passwordEnv');
-  if (!s.host) p.push('sending.smtp.host is not set');
-  if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) p.push('sending.smtp.port must be 465 (SSL) or 587 (STARTTLS)');
-  if (!s.user) p.push('sending.smtp.user is not set');
-  if (!/^[A-Z_][A-Z0-9_]*$/.test(s.passwordEnv)) p.push('sending.smtp.passwordEnv must be an environment variable name');
+/** Problems with one mailbox's SMTP settings (`raw` as written in config; `label` names it in messages). */
+function smtpConfigProblems(raw, label, env = process.env) {
+  const s = resolveSmtp({ sending: { smtp: raw } }), p = [];
+  if ('password' in raw || 'pass' in raw) p.push(`${label}.password must not be in the config file; put it in the env var named by ${label}.passwordEnv`);
+  if (!s.host) p.push(`${label}.host is not set`);
+  if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) p.push(`${label}.port must be 465 (SSL) or 587 (STARTTLS)`);
+  if (!s.user) p.push(`${label}.user is not set`);
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(s.passwordEnv)) p.push(`${label}.passwordEnv must be an environment variable name`);
   else if (!env[s.passwordEnv]) p.push(`environment variable ${s.passwordEnv} (SMTP password) is not set`);
   return p;
+}
+
+/** Config problems that block SMTP delivery (the single sending.smtp mailbox). */
+function smtpProblems(cfg, env = process.env) {
+  return smtpConfigProblems((cfg.sending && cfg.sending.smtp) || {}, 'sending.smtp', env);
+}
+
+/** Problems per pooled mailbox: Map of mailbox email -> [problems]. Only mailboxes with problems appear. */
+function mailboxProblems(cfg, env = process.env) {
+  const { mailboxes } = require('./deliverability');
+  const out = new Map();
+  (cfg.sending.mailboxes || []).forEach((raw, i) => {
+    const mb = mailboxes(cfg)[i];
+    const p = 'password' in raw || 'pass' in raw ? [`sending.mailboxes[${i}].password must not be in the config file; use passwordEnv`] : [];
+    p.push(...smtpConfigProblems(mb.smtp, `sending.mailboxes[${i}] (${mb.email})`, env));
+    if (p.length) out.set(mb.email, p);
+  });
+  return out;
 }
 
 /** Line reader + command/response over a socket that can be upgraded to TLS. */
@@ -109,11 +126,31 @@ const extList = r => r.lines.slice(1).map(l => l.toUpperCase());
  * Throws SmtpError (err.permanent true for 5xx).
  */
 async function sendMail(smtpCfg, eml, envelope, { env = process.env } = {}) {
+  if (/[\r\n<>]/.test(envelope.from + envelope.to)) throw new SmtpError('invalid envelope address', { stage: 'config' });
+  return withLogin(smtpCfg, env, async (c, encrypted) => {
+    await c.cmd(`MAIL FROM:<${envelope.from}>`, [250], 'MAIL FROM');
+    await c.cmd(`RCPT TO:<${envelope.to}>`, [250, 251], 'RCPT TO');
+    await c.cmd('DATA', [354], 'DATA');
+    const r = await c.cmd(dataPayload(eml), [250], 'DATA end');
+    try { await c.cmd('QUIT', [221], 'QUIT'); } catch { /* ignore */ }
+    return { code: r.code, response: r.text, encrypted };
+  });
+}
+
+/** Log in and log out without sending anything. Resolves {ok: true, encrypted}; throws SmtpError. */
+async function verifyLogin(smtpCfg, { env = process.env } = {}) {
+  return withLogin(smtpCfg, env, async (c, encrypted) => {
+    try { await c.cmd('QUIT', [221], 'QUIT'); } catch { /* ignore */ }
+    return { ok: true, encrypted };
+  });
+}
+
+/** Connect, secure the connection, authenticate, then run fn(session, encrypted). */
+async function withLogin(smtpCfg, env, fn) {
   const s = { ...SMTP_DEFAULTS, ...smtpCfg };
   s.port = Number(s.port); if (s.secure === null || s.secure === undefined || s.secure === '') s.secure = s.port === 465;
   const pass = env[s.passwordEnv];
   if (!pass) throw new SmtpError(`environment variable ${s.passwordEnv} is not set`, { stage: 'config' });
-  if (/[\r\n<>]/.test(envelope.from + envelope.to)) throw new SmtpError('invalid envelope address', { stage: 'config' });
   const tlsOpts = { servername: net.isIP(s.host) ? undefined : s.host, rejectUnauthorized: s.rejectUnauthorized !== false, minVersion: 'TLSv1.2' };
   if (s.caFile) tlsOpts.ca = fs.readFileSync(s.caFile);
   const sock = await connect(s, tlsOpts);
@@ -140,13 +177,18 @@ async function sendMail(smtpCfg, eml, envelope, { env = process.env } = {}) {
       await c.cmd(Buffer.from(s.user).toString('base64'), [334], 'AUTH');
       await c.cmd(Buffer.from(pass).toString('base64'), [235], 'AUTH');
     }
-    await c.cmd(`MAIL FROM:<${envelope.from}>`, [250], 'MAIL FROM');
-    await c.cmd(`RCPT TO:<${envelope.to}>`, [250, 251], 'RCPT TO');
-    await c.cmd('DATA', [354], 'DATA');
-    const r = await c.cmd(dataPayload(eml), [250], 'DATA end');
-    try { await c.cmd('QUIT', [221], 'QUIT'); } catch { /* ignore */ }
-    return { code: r.code, response: r.text, encrypted };
+    return await fn(c, encrypted);
   } finally { c.sock.destroy(); }
 }
 
-module.exports = { SMTP_DEFAULTS, SmtpError, resolveSmtp, smtpProblems, sendMail, dataPayload };
+/**
+ * Did this failure come from the sending mailbox or account rather than the recipient?
+ * (bad login, connection trouble, or the host's sending limit). Such failures leave the
+ * message queued and are never recorded as a bounce.
+ */
+function isMailboxFault(stage, message) {
+  if (['config', 'connect', 'greeting', 'EHLO', 'STARTTLS', 'AUTH', 'MAIL FROM', 'io'].includes(stage)) return true;
+  return /sending limit|relay limit|(exceeded|reached) (the |its |your )?(maximum|limit)|too many (messages|connections|recipients)|rate.?limit/i.test(String(message || ''));
+}
+
+module.exports = { SMTP_DEFAULTS, SmtpError, resolveSmtp, smtpConfigProblems, smtpProblems, mailboxProblems, isMailboxFault, sendMail, verifyLogin, dataPayload };

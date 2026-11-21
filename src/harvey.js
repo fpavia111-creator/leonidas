@@ -55,6 +55,24 @@ function fromHarvey(h = {}) {
     } else notes.push(`channels.email.provider "${email.provider}" recorded; use sending.transport file|command|smtp`);
   }
   if (email.max_daily_sends !== undefined) s.dailyCap = email.max_daily_sends;
+  if (email.max_hourly_sends !== undefined) s.hourlyCap = email.max_hourly_sends;
+  if (Array.isArray(email.mailboxes) && email.mailboxes.length) {
+    // Harvey always sends from the main mailbox (persona.email) too, ahead of the extra ones.
+    const extra = email.mailboxes.filter(mb => mb && typeof mb === 'object');
+    const off = extra.filter(mb => mb.enabled === false).map(mb => mb.address);
+    s.mailboxes = [persona.email && { email: persona.email }, ...extra.filter(mb => mb.enabled !== false).map(mb => {
+      const o = { email: mb.address || mb.email || '' };
+      if (mb.name) o.name = mb.name;
+      if (mb.password_env) o.passwordEnv = mb.password_env;
+      if (mb.smtp_host) o.host = mb.smtp_host;
+      if (mb.smtp_port) o.port = mb.smtp_port;
+      if (mb.max_daily_sends) o.dailyCap = mb.max_daily_sends;
+      return o;
+    })].filter(Boolean);
+    notes.push(`channels.email.mailboxes -> sending.mailboxes (${s.mailboxes.length} mailboxes, the main one first); passwords stay in the env vars named by passwordEnv`);
+    if (off.length) notes.push(`disabled mailboxes left out: ${off.join(', ')}`);
+    if (extra.some(mb => Array.isArray(mb.send_ramp) && mb.send_ramp.length)) notes.push('per-mailbox send_ramp is not carried over (Leonidas ramps per day): set warmupStartDate on new mailboxes instead');
+  }
   if (email.send_unverified !== undefined) s.sendUnverified = !!email.send_unverified;
   if (email.personalize_first_email !== undefined) s.personalizeFirstEmail = !!email.personalize_first_email;
   if (email.max_bounce_rate !== undefined) s.maxBounceRate = email.max_bounce_rate;

@@ -42,8 +42,10 @@ const DEFAULTS = {
   channels: { linkedin: { enabled: false, maxDailyConnections: 0, maxDailyMessages: 0 } },
 };
 // sending.* also accepts: ramp [n1,n2,...] (per-day warmup caps), window {start,end} 'HH:MM',
-// minIntervalSeconds, sendUnverified (default false), personalizeFirstEmail (default true).
-Object.assign(DEFAULTS.sending, { ramp: [], window: { start: '', end: '' }, minIntervalSeconds: 0, sendUnverified: false, personalizeFirstEmail: true, provider: '' });
+// minIntervalSeconds, sendUnverified (default false), personalizeFirstEmail (default true),
+// mailboxes [{email, passwordEnv, dailyCap, ...}] (a pool; dailyCap is then per mailbox),
+// totalDailyCap (0 = sum of mailbox caps), hourlyCap (0 = off; counts every mailbox).
+Object.assign(DEFAULTS.sending, { ramp: [], window: { start: '', end: '' }, minIntervalSeconds: 0, sendUnverified: false, personalizeFirstEmail: true, provider: '', mailboxes: [], totalDailyCap: 0, hourlyCap: 0 });
 
 const BOOKING_METHODS = ['reply', 'link', 'ask_preference'];
 
@@ -117,6 +119,24 @@ function validateConfig(cfg) {
   if (!isNum(s.maxBounceRate) || s.maxBounceRate < 0 || s.maxBounceRate > 1) e.push('sending.maxBounceRate must be a fraction between 0 and 1');
   for (const k of ['start', 'end']) if (s.window && s.window[k] && !HHMM.test(s.window[k])) e.push(`sending.window.${k} must be HH:MM`);
   if (!isNum(s.minIntervalSeconds) || s.minIntervalSeconds < 0) e.push('sending.minIntervalSeconds must be >= 0');
+  for (const k of ['totalDailyCap', 'hourlyCap']) if (!isNum(s[k]) || s[k] < 0) e.push(`sending.${k} must be a non-negative number (0 = off)`);
+  if (!Array.isArray(s.mailboxes)) e.push('sending.mailboxes must be a list');
+  else {
+    const seen = new Set();
+    s.mailboxes.forEach((mb, i) => {
+      const at = `sending.mailboxes[${i}]`;
+      if (!mb || typeof mb !== 'object' || Array.isArray(mb)) return e.push(`${at} must be a map with at least "email"`);
+      if ('password' in mb || 'pass' in mb) e.push(`${at}.password must not be stored in config; use ${at}.passwordEnv`);
+      const em = String(mb.email || '').trim().toLowerCase();
+      if (!/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(em)) e.push(`${at}.email must be an email address`);
+      else if (seen.has(em)) e.push(`${at}.email ${em} is listed twice`);
+      seen.add(em);
+      if (mb.passwordEnv !== undefined && !/^[A-Z_][A-Z0-9_]*$/.test(mb.passwordEnv)) e.push(`${at}.passwordEnv must be an environment variable name (A-Z, 0-9, _)`);
+      if (mb.dailyCap !== undefined && (!isNum(mb.dailyCap) || mb.dailyCap < 0)) e.push(`${at}.dailyCap must be a non-negative number`);
+      if (mb.warmupStartDate && !/^\d{4}-\d{2}-\d{2}$/.test(mb.warmupStartDate)) e.push(`${at}.warmupStartDate must be YYYY-MM-DD`);
+    });
+    if (s.mailboxes.length > 1 && !s.hourlyCap) w.push('sending.mailboxes has several mailboxes but sending.hourlyCap is 0: shared hosts limit sends per hour per account (GoDaddy cPanel: 500), so set it below that');
+  }
   const days = (s.allowedDays || []).map(d => String(d).slice(0, 3).toLowerCase());
   const extra = days.filter(d => !['tue', 'wed'].includes(d));
   if (extra.length) w.push(`sending.allowedDays includes ${extra.join(', ')}: cold email is only ever sent Tue/Wed, those days are ignored`);
@@ -146,12 +166,21 @@ function saveConfig(cfg, dir = stateDir()) {
 /** Problems that block *sending* (drafting is always allowed). */
 function sendReadiness(cfg) {
   const p = [];
+  const pooled = Array.isArray(cfg.sending.mailboxes) && cfg.sending.mailboxes.length > 0;
   if (cfg.sending.mode !== 'send') p.push('sending.mode is "draft" (set it to "send" explicitly to allow delivery)');
-  if (!cfg.sender.email) p.push('sender.email is not set');
+  if (!cfg.sender.email && !pooled) p.push('sender.email is not set');
   if (!cfg.sender.physicalAddress) p.push('sender.physicalAddress is not set (CAN-SPAM requires a valid postal address)');
   if (!cfg.compliance.unsubscribe.url && !cfg.compliance.unsubscribe.mailto) p.push('no unsubscribe url or mailto configured');
   if (cfg.sending.transport === 'command' && !cfg.sending.command) p.push('sending.transport is "command" but sending.command is empty');
-  if (cfg.sending.transport === 'smtp') p.push(...require('./smtp').smtpProblems(cfg));
+  if (cfg.sending.transport === 'smtp') {
+    const smtp = require('./smtp');
+    if (!pooled) p.push(...smtp.smtpProblems(cfg));
+    else {
+      // A pool keeps sending while at least one mailbox is usable; broken ones are skipped and shown in status.
+      const bad = smtp.mailboxProblems(cfg);
+      if (bad.size === cfg.sending.mailboxes.length) p.push(`no usable mailbox: ${[...bad.values()].map(x => x[0]).join('; ')}`);
+    }
+  }
   return p;
 }
 
