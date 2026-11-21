@@ -360,9 +360,10 @@ class Leadwright {
         const lead = this.getLead(msg.from.email);
         const status = { needs_reply: 'new', opt_out: 'opted_out', escalate: 'needs_human', bounce: 'bounce_recorded' }[c.category] || 'ignored';
         const rec = {
-          id: newId('in'), account: label, key: raw.key, messageId: msg.messageId, references: msg.references,
+          id: newId('in'), account: label, folder: raw.folder || 'INBOX', key: raw.key, messageId: msg.messageId, references: msg.references,
           from: normalizeEmail(msg.from.email), fromName: msg.from.name, to: msg.recipients,
-          replyFrom: msg.recipients.map(e => e.toLowerCase()).find(e => pool.has(e)) || null,
+          // Answer from the mailbox it reached: one of ours it was addressed to, else the mailbox we read it in.
+          replyFrom: msg.recipients.map(e => e.toLowerCase()).find(e => pool.has(e)) || (pool.has(label) ? label : null),
           subject: msg.subject, date: msg.date || raw.internalDate, receivedAt: this.now().toISOString(),
           category: c.category, reasons: c.reasons, autoReplyEligible: c.autoReplyEligible, leadId: lead ? lead.id : null,
           text: msg.own.slice(0, 6000), hasQuotedHistory: msg.body.length > msg.own.length, attachments: msg.attachments.map(a => a.name).filter(Boolean), status,
@@ -397,7 +398,7 @@ class Leadwright {
   }
 
   _inboxSummary(r) {
-    return { id: r.id, from: r.fromName ? `${r.fromName} <${r.from}>` : r.from, to: r.replyFrom || r.account, subject: r.subject, date: r.date, category: r.category, reasons: r.reasons, status: r.status, autoReplyEligible: r.autoReplyEligible, knownLead: !!r.leadId, text: r.category === 'needs_reply' || r.category === 'escalate' ? r.text : undefined };
+    return { id: r.id, from: r.fromName ? `${r.fromName} <${r.from}>` : r.from, to: r.replyFrom || r.account, folder: r.folder, subject: r.subject, date: r.date, category: r.category, reasons: r.reasons, status: r.status, autoReplyEligible: r.autoReplyEligible, knownLead: !!r.leadId, text: r.category === 'needs_reply' || r.category === 'escalate' ? r.text : undefined };
   }
 
   /** Inbox messages, optionally only one status (new, needs_human, ...) or category. */
@@ -418,6 +419,9 @@ class Leadwright {
     const { AUTO_REPLY_INTENTS } = require('./inbox');
     const ib = this.cfg.inbox, b = [];
     if (!ib.autoReply) b.push('inbox.autoReply is off');
+    // Don't approve now what can't go out now: a reply held until sending is set up would arrive stale.
+    const notReady = sendReadiness(this.cfg);
+    if (notReady.length) b.push(`sending isn't ready: ${notReady.join('; ')}`);
     if (!AUTO_REPLY_INTENTS.includes(intent)) b.push(`intent "${intent}" is never answered automatically (only ${AUTO_REPLY_INTENTS.join(', ')})`);
     if (!rec.autoReplyEligible) b.push(`message is not eligible: ${rec.reasons.join('; ')}`);
     if (ib.autoReplyTo === 'leads' && !rec.leadId) b.push('sender is not a lead Leonidas contacted (inbox.autoReplyTo="leads")');

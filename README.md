@@ -127,7 +127,7 @@ An entry can be just the address (`- you@yourdomain.com`), or a map with `email`
 Leonidas sends each message from the least-used mailbox that has room today. Mail to someone who was already written to goes out from the same mailbox, so the thread stays in one inbox. If that mailbox is at its cap, the message waits. A mailbox with a missing password or an invalid address is skipped. When a mailbox fails while sending, its message moves to the next mailbox and nothing is recorded as a bounce. The mailbox then rests: for an hour after a failed login or a host sending limit (such as cPanel's "exceeded the max emails per hour"), and for 10 minutes after a connection problem. Rests last across runs, so a wrong password isn't tried again every few seconds. A successful `leonidas mailboxes test` ends a rest early. Only one `leonidas send` runs at a time per state folder; a second one reports `busy`. `leonidas status` lists each mailbox with its sends today, its cap, its hard bounces and any problems. `leonidas mailboxes test` logs in to every mailbox over SMTP and logs out without sending anything, so you can check passwords on any day of the week.
 
 ### Reading and answering replies
-Leonidas reads your inbox over IMAP (read-only: nothing is marked read, moved or deleted) and sorts every new message before anyone answers it. The rules come from Harvey's reply handler.
+Leonidas logs in to each mailbox over IMAP (read-only: nothing is marked read, moved or deleted), checks the inbox and every spam/junk folder it finds, and sorts every new message before anyone answers it. List one account per mailbox; a reply goes out from the mailbox the message reached. The rules come from Harvey's reply handler.
 
 | Category | What Leonidas does |
 |---|---|
@@ -143,10 +143,11 @@ When a lead replies, the rest of their cold sequence is pulled. The agent decide
 ```yaml
 inbox:
   accounts:
-    - host: imap.gmail.com        # cPanel: mail.yourdomain.com
+    - host: mail.yourdomain.com   # cPanel; Gmail: imap.gmail.com with an app password
       port: 993
-      user: you@gmail.com
-      passwordEnv: LEONIDAS_IMAP_PASSWORD   # Gmail needs an app password
+      user: you@yourdomain.com
+      passwordEnv: LEONIDAS_PW_YOU      # one env var per mailbox; reuse it in sending.mailboxes
+      # checkSpam: false            # inbox only; or folders: [INBOX, INBOX.spam]
   lookbackDays: 7
   autoReply: false                # true = safe replies go out without review
   autoReplyTo: leads              # or "people": anyone who wrote personally
@@ -156,7 +157,10 @@ inbox:
 leonidas inbox check     # read new mail and sort it
 leonidas inbox new       # what still needs an answer
 leonidas inbox show <id>
+leonidas inbox test      # log in to each account, list the folders it will check
+leonidas inbox reply <id> <intent> reply.txt   # for an agent driving the CLI
 ```
+To check on a timer, run `leonidas inbox check` from cron or Windows Task Scheduler (e.g. every 10 minutes) and let the agent answer what it sorts as `needs_reply`.
 **Auto-reply.** With `autoReply: false` (the default) every reply waits for `leonidas approve <id>`. With `autoReply: true`, a reply the agent writes is approved and sent at once only when all of these hold: the message is `needs_reply` from a person (not on the do-not-contact list), the intent is interested, question, objection, wrong_person or accepted_offer, the sender is a lead Leonidas contacted (or `autoReplyTo: people`), the draft passes the content gate, the daily auto-reply limit isn't reached, and that person hasn't had two auto-replies in 24 hours. Replies are threaded (`In-Reply-To`), go out from the mailbox the person wrote to when it is in `sending.mailboxes`, and aren't held to the Tue/Wed rule or the send window, which are for cold email. Caps, quiet hours, the bounce breaker and `sending.mode: send` still apply.
 
 ### YAML configs, Harvey import and validation

@@ -9,9 +9,10 @@ const { lw, LEAD, GOOD, SAT } = require('./helpers');
 
 const ENV = { LEONIDAS_IMAP_PASSWORD: 'secret' };
 
-/** Tiny fake IMAP server (plaintext, tests only). messages: [{uid, raw}] */
-function fakeImap(messages, { user = 'me@acme.test', pass = 'secret' } = {}) {
+/** Tiny fake IMAP server (plaintext, tests only). messages: [{uid, raw}]; spam: messages in INBOX.spam */
+function fakeImap(inboxMessages, { user = 'me@acme.test', pass = 'secret', spam = null } = {}) {
   const commands = [];
+  let messages = inboxMessages;
   const server = net.createServer(sock => {
     sock.setEncoding('latin1');
     let buf = '';
@@ -25,7 +26,13 @@ function fakeImap(messages, { user = 'me@acme.test', pass = 'secret' } = {}) {
         commands.push(verb === 'LOGIN' ? 'LOGIN [hidden]' : line.slice(tag.length + 1));
         const V = (verb || '').toUpperCase();
         if (V === 'LOGIN') { const ok = rest.join(' ') === `"${user}" "${pass}"`; sock.write(ok ? `${tag} OK logged in\r\n` : `${tag} NO [AUTHENTICATIONFAILED] bad\r\n`); }
-        else if (V === 'EXAMINE') sock.write(`* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY 42] ok\r\n${tag} OK [READ-ONLY] done\r\n`);
+        else if (V === 'LIST') sock.write(`* LIST (\\HasNoChildren) "." "INBOX"\r\n${spam ? '* LIST (\\HasNoChildren \\Junk) "." "INBOX.spam"\r\n' : ''}* LIST (\\HasNoChildren) "." "INBOX.Sent"\r\n${tag} OK done\r\n`);
+        else if (V === 'EXAMINE') {
+          const box = rest.join(' ').replace(/"/g, '');
+          if (box === 'INBOX.spam' && spam) { messages = spam; sock.write(`* OK [UIDVALIDITY 77] ok\r\n${tag} OK [READ-ONLY] done\r\n`); }
+          else if (box === 'INBOX') { messages = inboxMessages; sock.write(`* ${messages.length} EXISTS\r\n* OK [UIDVALIDITY 42] ok\r\n${tag} OK [READ-ONLY] done\r\n`); }
+          else sock.write(`${tag} NO no such folder\r\n`);
+        }
         else if (V === 'UID' && /^SEARCH/i.test(rest[0])) sock.write(`* SEARCH ${messages.map(m => m.uid).join(' ')}\r\n${tag} OK done\r\n`);
         else if (V === 'UID' && /^FETCH/i.test(rest[0])) {
           const want = rest[1].split(',').map(Number);
@@ -64,6 +71,17 @@ describe('imap client (fake server)', () => {
       assert.ok(s.commands.some(c => /^EXAMINE "INBOX"/.test(c)), 'opens the mailbox read-only');
       assert.ok(s.commands.some(c => /BODY\.PEEK\[HEADER\]/.test(c)), 'never marks mail as read');
       assert.ok(s.commands.includes('UID SEARCH SINCE 14-Nov-2026'));
+    } finally { s.close(); }
+  });
+  it('also checks the spam folder, keyed separately', async () => {
+    const s = await fakeImap([{ uid: 1, raw: eml({ From: 'a@x.test', Subject: 'in inbox' }, 'hi') }],
+      { spam: [{ uid: 1, raw: eml({ From: 'lead@x.test', Subject: 'landed in spam' }, 'Is this still available?') }] });
+    try {
+      const r = await fetchRecent(acct(s.port), { env: ENV });
+      assert.deepEqual(r.folders, ['INBOX', 'INBOX.spam']);
+      assert.deepEqual(r.messages.map(m => `${m.folder} ${m.key}`), ['INBOX 42:1', 'INBOX.spam INBOX.spam/77:1']);
+      const only = await fetchRecent({ ...acct(s.port), checkSpam: false }, { env: ENV });
+      assert.deepEqual(only.folders, ['INBOX']);
     } finally { s.close(); }
   });
   it('wrong password fails with a clear error and no password in it', async () => {

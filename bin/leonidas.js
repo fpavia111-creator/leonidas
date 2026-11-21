@@ -37,6 +37,9 @@ Usage: leonidas <command> [args]   ("leadwright" still works but is deprecated)
   inbox [status]                 list inbox messages (new, needs_human, reply_queued, replied, ...)
   inbox show <id>                print one inbox message
   inbox close <id> [note]        close an inbox message without replying
+  inbox escalate <id> [note]     hand an inbox message to a human
+  inbox reply <id> <intent> <file|->  queue (or, with inbox.autoReply, send) the reply in file / stdin
+  inbox test                     log in to every inbox account and list the folders it checks (reads nothing)
   import-harvey <in.yaml> [out]  convert a Harvey-style YAML config to Leonidas YAML (stdout if no out)
   import-harvey-contacts <csv>   add leads from a Harvey contacts export; opt-outs and invalid addresses
                                  go to do-not-contact, prospects Harvey already emailed are left out`;
@@ -160,11 +163,35 @@ async function main(argv) {
         const r = await lw.checkInbox({ actor: 'human' });
         for (const acct of r.accounts) console.error(`${acct.account}: ${acct.ok ? `${acct.fetched} fetched` : 'FAILED ' + acct.problems.join('; ')}`);
         if (r.accounts.some(x => !x.ok)) process.exitCode = 1;
-        return out({ new: r.new.map(m => `${m.id}  ${m.category.padEnd(11)} ${m.from}  "${m.subject}"`), actions: r.actions });
+        if (a.includes('--json')) return out(r);
+        return out({ new: r.new.map(m => `${m.id}  ${m.category.padEnd(11)} ${m.from} -> ${m.to}${m.folder && m.folder !== 'INBOX' ? ' [' + m.folder + ']' : ''}  "${m.subject}"`), actions: r.actions });
       }
       if (a[0] === 'show') { const r = lw.inboxRecords().find(x => x.id === a[1]); if (!r) throw new Error('unknown inbox message'); return out(`From: ${r.fromName ? r.fromName + ' ' : ''}<${r.from}>\nTo: ${r.replyFrom || r.account}\nSubject: ${r.subject}\nDate: ${r.date}\nCategory: ${r.category} (${r.reasons.join('; ')})\nStatus: ${r.status}${r.replyId ? '  reply ' + r.replyId : ''}\n\n${r.text}`); }
       if (a[0] === 'close') return out(lw.markInbox(a[1], { status: 'closed', note: a.slice(2).join(' '), actor: 'human' }).status);
-      return out(lw.inbox({ status: a[0] }).map(m => `${m.id}  ${m.status.padEnd(15)} ${m.category.padEnd(11)} ${m.from}  "${m.subject}"`).join('\n') || '(empty)');
+      if (a[0] === 'escalate') return out(lw.markInbox(a[1], { status: 'needs_human', note: a.slice(2).join(' '), actor: 'agent' }).status);
+      // For an agent driving the CLI: the reply body comes from a file or stdin ("-") so quoting can't mangle it.
+      if (a[0] === 'reply') {
+        const [, id, intent, src] = a;
+        if (!id || !intent || !src) throw new Error('usage: leonidas inbox reply <id> <intent> <body-file|->');
+        const body = fs.readFileSync(src === '-' ? 0 : path.resolve(src), 'utf8');
+        const r = lw.queueReply({ inboxId: id, body, intent, actor: 'agent' });
+        return out({ id: r.message.id, status: r.message.status, autoSent: r.autoSent, from: r.message.from || r.message.replyFrom, result: r.result, waitingFor: r.waitingFor, why: r.why });
+      }
+      if (a[0] === 'test') {
+        const { fetchRecent, accountProblems } = require('../src/imap');
+        let bad = 0;
+        for (const [i, acct] of (lw.cfg.inbox.accounts || []).entries()) {
+          const label = acct.user || `inbox.accounts[${i}]`;
+          const p = accountProblems(acct, `inbox.accounts[${i}]`);
+          if (p.length) { bad++; console.log(`${label}: ${p.join('; ')}`); continue; }
+          try { const r = await fetchRecent(acct, { listOnly: true }); console.log(`${label}: ok, checks ${r.folders.join(' + ')}`); } catch (e) { bad++; console.log(`${label}: FAILED ${e.message}`); }
+        }
+        if (bad) process.exitCode = 1;
+        return;
+      }
+      const list = lw.inbox({ status: a[0] && a[0] !== '--json' ? a[0] : undefined });
+      if (a.includes('--json')) return out(list);
+      return out(list.map(m => `${m.id}  ${m.status.padEnd(15)} ${m.category.padEnd(11)} ${m.from} -> ${m.to}${m.folder && m.folder !== 'INBOX' ? ' [' + m.folder + ']' : ''}  "${m.subject}"`).join('\n') || '(empty)');
     }
     case 'audit': return out(a.includes('--verify') ? lw.audit.verify() : lw.audit.all());
     default: out(HELP); process.exitCode = 2;

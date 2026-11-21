@@ -14,7 +14,7 @@ class ImapError extends Error {
   constructor(message, { stage } = {}) { super(message); this.stage = stage; }
 }
 
-const IMAP_DEFAULTS = { host: '', port: 993, user: '', passwordEnv: 'LEONIDAS_IMAP_PASSWORD', mailbox: 'INBOX', timeoutMs: 30000, caFile: '', rejectUnauthorized: true, allowPlaintext: false };
+const IMAP_DEFAULTS = { host: '', port: 993, user: '', passwordEnv: 'LEONIDAS_IMAP_PASSWORD', mailbox: 'INBOX', folders: [], checkSpam: true, timeoutMs: 30000, caFile: '', rejectUnauthorized: true, allowPlaintext: false };
 
 function resolveAccount(raw = {}) {
   const a = { ...IMAP_DEFAULTS, ...raw };
@@ -93,10 +93,11 @@ const imapDate = d => `${d.getUTCDate()}-${MONTHS[d.getUTCMonth()]}-${d.getUTCFu
 
 /**
  * Fetch recent messages from one account without changing anything on the server.
- * opts: { since: Date, skip: Set of "uidvalidity:uid" keys already seen, max, env }
+ * Checks the inbox and, unless checkSpam is false or folders are listed, every spam/junk folder.
+ * opts: { since: Date, skip: Set of keys already seen ("uidvalidity:uid", "Folder/uidvalidity:uid"), max per folder, env, listOnly }
  * Returns { uidValidity, messages: [{key, uid, header, text, internalDate}] } (raw header/text, latin1).
  */
-async function fetchRecent(raw, { since, skip = new Set(), max = 50, env = process.env } = {}) {
+async function fetchRecent(raw, { since, skip = new Set(), max = 50, env = process.env, listOnly = false } = {}) {
   const a = resolveAccount(raw);
   const pass = env[a.passwordEnv];
   if (!pass) throw new ImapError(`environment variable ${a.passwordEnv} is not set`, { stage: 'config' });
@@ -123,16 +124,34 @@ async function fetchRecent(raw, { since, skip = new Set(), max = 50, env = proce
     const g = await r.next('greeting');
     if (!/^\* (OK|PREAUTH)/i.test(g.text[0])) throw new ImapError(`greeting: ${g.text[0]}`, { stage: 'greeting' });
     await cmd(`LOGIN ${quote(a.user)} ${quote(pass)}`, 'LOGIN');
-    const ex = await cmd(`EXAMINE ${quote(a.mailbox)}`, 'EXAMINE');
-    const uv = ex.map(x => x.text.join(' ').match(/\[UIDVALIDITY (\d+)\]/i)).find(Boolean);
-    const uidValidity = uv ? uv[1] : '0';
-    const crit = since ? `SINCE ${imapDate(since)}` : 'ALL';
-    const s = await cmd(`UID SEARCH ${crit}`, 'SEARCH');
-    const uids = s.map(x => x.text.join(' ')).filter(t => /^\* SEARCH/i.test(t))
-      .flatMap(t => t.replace(/^\* SEARCH/i, '').trim().split(/\s+/)).filter(Boolean).map(Number).sort((x, y) => x - y);
-    const want = uids.filter(u => !skip.has(`${uidValidity}:${u}`)).slice(-max);
+    // Which folders: the configured list, else the inbox plus any spam/junk folder the server has.
+    let folders = Array.isArray(a.folders) && a.folders.length ? a.folders.map(String) : [a.mailbox];
+    let found = [];
+    if (!(Array.isArray(a.folders) && a.folders.length) && a.checkSpam !== false || listOnly) {
+      let l = [];
+      try { l = await cmd('LIST "" "*"', 'LIST'); } catch (e) { if (listOnly) throw e; }
+      found = l.map(x => x.text.join(' ').match(/^\* LIST \(([^)]*)\) (?:"[^"]*"|NIL) (?:"((?:[^"\\]|\\.)*)"|(\S+))$/i)).filter(Boolean)
+        .map(m => ({ attrs: m[1], name: m[2] !== undefined ? m[2].replace(/\\(.)/g, '$1') : m[3] }));
+      if (!(Array.isArray(a.folders) && a.folders.length) && a.checkSpam !== false) {
+        for (const f of found) if ((/\\Junk/i.test(f.attrs) || /(^|[./])(spam|junk|junk e-?mail|bulk mail)$/i.test(f.name)) && !folders.includes(f.name)) folders.push(f.name);
+      }
+    }
+    if (listOnly) { try { await cmd('LOGOUT', 'LOGOUT'); } catch { /* ignore */ } return { folders, allFolders: found.map(f => f.name), messages: [] }; }
     const messages = [];
-    if (want.length) {
+    let uidValidity = '0';
+    for (const folder of folders) {
+      let ex;
+      try { ex = await cmd(`EXAMINE ${quote(folder)}`, 'EXAMINE'); } catch (e) { if (folder === a.mailbox) throw e; continue; }
+      const uv = ex.map(x => x.text.join(' ').match(/\[UIDVALIDITY (\d+)\]/i)).find(Boolean);
+      const fuv = uv ? uv[1] : '0';
+      if (folder === a.mailbox) uidValidity = fuv;
+      const keyOf = uid => (folder === a.mailbox ? '' : folder + '/') + `${fuv}:${uid}`;
+      const crit = since ? `SINCE ${imapDate(since)}` : 'ALL';
+      const s = await cmd(`UID SEARCH ${crit}`, 'SEARCH');
+      const uids = s.map(x => x.text.join(' ')).filter(t => /^\* SEARCH/i.test(t))
+        .flatMap(t => t.replace(/^\* SEARCH/i, '').trim().split(/\s+/)).filter(Boolean).map(Number).sort((x, y) => x - y);
+      const want = uids.filter(u => !skip.has(keyOf(u))).slice(-max);
+      if (!want.length) continue;
       const f = await cmd(`UID FETCH ${want.join(',')} (UID INTERNALDATE BODY.PEEK[HEADER] BODY.PEEK[TEXT]<0.60000>)`, 'FETCH');
       for (const res of f) {
         if (!/^\* \d+ FETCH/i.test(res.text[0])) continue;
@@ -147,11 +166,11 @@ async function fetchRecent(raw, { since, skip = new Set(), max = 50, env = proce
         });
         if (!text) { const q = all.match(/BODY\[TEXT\](?:<\d+>)? "((?:[^"\\]|\\.)*)"/i); if (q) text = q[1].replace(/\\(.)/g, '$1'); }
         const internalDate = (all.match(/INTERNALDATE "([^"]+)"/i) || [])[1] || '';
-        messages.push({ key: `${uidValidity}:${uid}`, uid, header, text, internalDate });
+        messages.push({ key: keyOf(uid), uid, folder, header, text, internalDate });
       }
     }
     try { await cmd('LOGOUT', 'LOGOUT'); } catch { /* ignore */ }
-    return { uidValidity, messages };
+    return { uidValidity, folders, messages };
   } finally { sock.destroy(); }
 }
 
