@@ -12,7 +12,7 @@ Your coding agent researches leads, scores them against an industry ICP, and dra
 Autonomous SDR agents fail in the same ways: a fake "Re:" subject, a missing unsubscribe line, a burned domain, an email to someone who already opted out, and no record of why that person was emailed. Leonidas puts deterministic code between the model and the outbox.
 
 ## Features
-- **MCP server (stdio, zero dependencies)** with 18 tools: `leo_add_leads`, `leo_writer_prompt`, `leo_check_email`, `leo_queue_email`, `leo_why`, `leo_send_approved`, `leo_objection`, `leo_dns_check`, and more. The 0.1.x `lw_*` names still work as aliases.
+- **MCP server (stdio, zero dependencies)** with 22 tools: `leo_add_leads`, `leo_writer_prompt`, `leo_check_email`, `leo_queue_email`, `leo_why`, `leo_send_approved`, `leo_objection`, `leo_dns_check`, `leo_check_inbox`, `leo_queue_reply`, and more. The 0.1.x `lw_*` names still work as aliases.
 - **Never auto-sends.** `sending.mode` defaults to `"draft"`. Only a human approves (`leonidas approve <id>`). Agents can approve only if you set `approval.allowAgentApproval: true` yourself.
 - **CAN-SPAM gate.** Every message gets a footer with your physical postal address and an opt-out line. `List-Unsubscribe` headers are added (one-click when you set a URL). Deceptive `Re:`/`Fwd:` subjects on a first touch are blocked.
 - **Cold email bodies under 100 words** (footer excluded). Hard error at queue and send time. Config can tighten it but can't loosen it.
@@ -125,6 +125,39 @@ sending:
 An entry can be just the address (`- you@yourdomain.com`), or a map with `email` (the From address and login) and optionally `user` (a different login), `name` (display name, default `sender.name`), `passwordEnv` (default `sending.smtp.passwordEnv`), `host`, `port`, `secure`, `dailyCap` and `warmupStartDate`. Every gate applies to every mailbox. The send window, quiet hours, `minIntervalSeconds`, the per-domain cap and the bounce breaker count all mailboxes together.
 
 Leonidas sends each message from the least-used mailbox that has room today. Mail to someone who was already written to goes out from the same mailbox, so the thread stays in one inbox. If that mailbox is at its cap, the message waits. A mailbox with a missing password or an invalid address is skipped. When a mailbox fails while sending, its message moves to the next mailbox and nothing is recorded as a bounce. The mailbox then rests: for an hour after a failed login or a host sending limit (such as cPanel's "exceeded the max emails per hour"), and for 10 minutes after a connection problem. Rests last across runs, so a wrong password isn't tried again every few seconds. A successful `leonidas mailboxes test` ends a rest early. Only one `leonidas send` runs at a time per state folder; a second one reports `busy`. `leonidas status` lists each mailbox with its sends today, its cap, its hard bounces and any problems. `leonidas mailboxes test` logs in to every mailbox over SMTP and logs out without sending anything, so you can check passwords on any day of the week.
+
+### Reading and answering replies
+Leonidas reads your inbox over IMAP (read-only: nothing is marked read, moved or deleted) and sorts every new message before anyone answers it. The rules come from Harvey's reply handler.
+
+| Category | What Leonidas does |
+|---|---|
+| `opt_out` ("unsubscribe", "remove me", "STOP", "no thanks"...) | Adds the sender to do-not-contact and pulls their pending mail. Never answered. |
+| `escalate` (lawyer, lawsuit, harassment, FTC, spam report...) | Flags it for a human. Never answered by the agent. |
+| `bounce` | Records the bounce; a hard bounce suppresses the address. |
+| `suspicious` (phishing tells, SEO pitches, risky attachments) | Never answered. |
+| `auto_reply`, `automated` (out-of-office, newsletters, receipts, no-reply senders) | Ignored. |
+| `needs_reply` | A person wrote. The agent may answer with `leo_queue_reply`. |
+
+When a lead replies, the rest of their cold sequence is pulled. The agent decides the intent (interested, question, objection, wrong person, other). For not interested it closes the message with `leo_mark_inbox` instead of replying.
+
+```yaml
+inbox:
+  accounts:
+    - host: imap.gmail.com        # cPanel: mail.yourdomain.com
+      port: 993
+      user: you@gmail.com
+      passwordEnv: LEONIDAS_IMAP_PASSWORD   # Gmail needs an app password
+  lookbackDays: 7
+  autoReply: false                # true = safe replies go out without review
+  autoReplyTo: leads              # or "people": anyone who wrote personally
+  maxAutoRepliesPerDay: 20
+```
+```bash
+leonidas inbox check     # read new mail and sort it
+leonidas inbox new       # what still needs an answer
+leonidas inbox show <id>
+```
+**Auto-reply.** With `autoReply: false` (the default) every reply waits for `leonidas approve <id>`. With `autoReply: true`, a reply the agent writes is approved and sent at once only when all of these hold: the message is `needs_reply` from a person (not on the do-not-contact list), the intent is interested, question, objection, wrong_person or accepted_offer, the sender is a lead Leonidas contacted (or `autoReplyTo: people`), the draft passes the content gate, the daily auto-reply limit isn't reached, and that person hasn't had two auto-replies in 24 hours. Replies are threaded (`In-Reply-To`), go out from the mailbox the person wrote to when it is in `sending.mailboxes`, and aren't held to the Tue/Wed rule or the send window, which are for cold email. Caps, quiet hours, the bounce breaker and `sending.mode: send` still apply.
 
 ### YAML configs, Harvey import and validation
 ```bash

@@ -40,6 +40,12 @@ const DEFAULTS = {
   usage: { maxDailyBrainPercent: 100, heartbeatIntervalMinutes: 15, quietHours: { start: '', end: '', timezone: '' } },
   brain: { provider: '' },
   channels: { linkedin: { enabled: false, maxDailyConnections: 0, maxDailyMessages: 0 } },
+  // Reading replies (IMAP). accounts: [{host, port: 993, user, passwordEnv, mailbox: "INBOX"}].
+  // autoReply=false: every reply waits for a human. autoReply=true: replies the agent writes to a
+  // person (never opt-outs, legal/angry mail, bounces, auto-replies, newsletters or phishing) are
+  // approved and sent at once, if the agent's intent is interested/question/objection/wrong_person.
+  // autoReplyTo: "people" = anyone who wrote personally; "leads" = only people Leonidas contacted.
+  inbox: { accounts: [], lookbackDays: 7, maxPerCheck: 50, autoReply: false, autoReplyTo: 'leads', maxAutoRepliesPerDay: 20 },
 };
 // sending.* also accepts: ramp [n1,n2,...] (per-day warmup caps), window {start,end} 'HH:MM',
 // minIntervalSeconds, sendUnverified (default false), personalizeFirstEmail (default true),
@@ -166,6 +172,19 @@ function validateConfig(cfg) {
   for (const k of ['start', 'end']) if (q[k] && !HHMM.test(q[k])) e.push(`usage.quietHours.${k} must be HH:MM`);
   if (!!q.start !== !!q.end) e.push('usage.quietHours needs both start and end');
   if (cfg.sender.physicalAddress === '' ) w.push('sender.physicalAddress is empty (required before sending)');
+  const ib = cfg.inbox || {};
+  if (!Array.isArray(ib.accounts)) e.push('inbox.accounts must be a list');
+  else ib.accounts.forEach((acct, i) => {
+    if (!acct || typeof acct !== 'object' || Array.isArray(acct)) { e.push(`inbox.accounts[${i}] must be an object`); return; }
+    if ('password' in acct || 'pass' in acct) e.push(`inbox.accounts[${i}].password must not be stored in config; use passwordEnv`);
+    if (!acct.host) e.push(`inbox.accounts[${i}].host is not set`);
+    if (!acct.user) e.push(`inbox.accounts[${i}].user is not set`);
+    if (acct.allowPlaintext) w.push(`inbox.accounts[${i}].allowPlaintext is true: the password may cross the network unencrypted (testing only)`);
+  });
+  if (!['people', 'leads'].includes(ib.autoReplyTo)) e.push('inbox.autoReplyTo must be "people" or "leads"');
+  if (!isNum(ib.lookbackDays) || ib.lookbackDays < 1) e.push('inbox.lookbackDays must be at least 1');
+  if (!isNum(ib.maxAutoRepliesPerDay) || ib.maxAutoRepliesPerDay < 0) e.push('inbox.maxAutoRepliesPerDay must be >= 0');
+  if (ib.autoReply) w.push(`inbox.autoReply is true: the agent's answers to ${ib.autoReplyTo === 'people' ? 'anyone who writes personally' : 'leads who reply'} are sent without human review (opt-outs, legal/angry mail, bounces and phishing are never answered)`);
   return { errors: e, warnings: w };
 }
 

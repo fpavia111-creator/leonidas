@@ -32,6 +32,11 @@ Usage: leonidas <command> [args]   ("leadwright" still works but is deprecated)
   dns <domain> [dkimSelector]    SPF / DMARC / DKIM check
   config check [file]            validate a config (.json/.yaml; default $LEONIDAS_CONFIG or .leonidas/config.*)
   mailboxes test                 log in to every sending mailbox over SMTP and log out (sends nothing)
+  inbox check                    read new mail (read-only): opt-outs suppressed, bounces recorded,
+                                 the rest sorted for the agent to answer
+  inbox [status]                 list inbox messages (new, needs_human, reply_queued, replied, ...)
+  inbox show <id>                print one inbox message
+  inbox close <id> [note]        close an inbox message without replying
   import-harvey <in.yaml> [out]  convert a Harvey-style YAML config to Leonidas YAML (stdout if no out)
   import-harvey-contacts <csv>   add leads from a Harvey contacts export; opt-outs and invalid addresses
                                  go to do-not-contact, prospects Harvey already emailed are left out`;
@@ -150,6 +155,17 @@ async function main(argv) {
     case 'unsuppress': { const n = lw.suppression.remove(a[0]); lw.audit.record({ action: 'unsuppressed', actor: 'human', reason: `removed ${a[0]}` }); return out(`removed ${n}`); }
     case 'bounce': return out(lw.recordBounce({ email: a[0], code: a[1], diagnostic: a.slice(2).join(' '), actor: 'human' }));
     case 'why': return out(lw.why(a[0]) || 'unknown lead');
+    case 'inbox': {
+      if (a[0] === 'check') {
+        const r = await lw.checkInbox({ actor: 'human' });
+        for (const acct of r.accounts) console.error(`${acct.account}: ${acct.ok ? `${acct.fetched} fetched` : 'FAILED ' + acct.problems.join('; ')}`);
+        if (r.accounts.some(x => !x.ok)) process.exitCode = 1;
+        return out({ new: r.new.map(m => `${m.id}  ${m.category.padEnd(11)} ${m.from}  "${m.subject}"`), actions: r.actions });
+      }
+      if (a[0] === 'show') { const r = lw.inboxRecords().find(x => x.id === a[1]); if (!r) throw new Error('unknown inbox message'); return out(`From: ${r.fromName ? r.fromName + ' ' : ''}<${r.from}>\nTo: ${r.replyFrom || r.account}\nSubject: ${r.subject}\nDate: ${r.date}\nCategory: ${r.category} (${r.reasons.join('; ')})\nStatus: ${r.status}${r.replyId ? '  reply ' + r.replyId : ''}\n\n${r.text}`); }
+      if (a[0] === 'close') return out(lw.markInbox(a[1], { status: 'closed', note: a.slice(2).join(' '), actor: 'human' }).status);
+      return out(lw.inbox({ status: a[0] }).map(m => `${m.id}  ${m.status.padEnd(15)} ${m.category.padEnd(11)} ${m.from}  "${m.subject}"`).join('\n') || '(empty)');
+    }
     case 'audit': return out(a.includes('--verify') ? lw.audit.verify() : lw.audit.all());
     default: out(HELP); process.exitCode = 2;
   }

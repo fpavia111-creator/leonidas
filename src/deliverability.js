@@ -152,11 +152,14 @@ function bounceStats(sendLog, bounces) {
 }
 
 /** Can one more message to `email` go out today? Returns {ok, reasons[], cap, used}. */
-function canSend(cfg, { sendLog, bounces, email, now = new Date(), recipientTz }) {
+function canSend(cfg, { sendLog, bounces, email, now = new Date(), recipientTz, kind = 'cold' }) {
   const reasons = [];
   const tz = recipientTz || cfg.sending.timezone || 'America/Chicago';
   let sendAfter = null;
-  if (!isAllowedDay(cfg, now, tz)) {
+  // The Tue/Wed rule and the send window are for cold outreach. Answering someone who wrote to
+  // you isn't cold email, so a reply goes out any day (caps, quiet hours and the bounce breaker still apply).
+  const isReply = kind === 'reply';
+  if (!isReply && !isAllowedDay(cfg, now, tz)) {
     sendAfter = nextAllowedDay(cfg, now, tz);
     reasons.push(`not an allowed send day: cold email only goes out on ${allowedDays(cfg).join('/')} (${tz}); queued for ${sendAfter}`);
   }
@@ -176,7 +179,7 @@ function canSend(cfg, { sendLog, bounces, email, now = new Date(), recipientTz }
   if (perDomain >= cfg.sending.perDomainDailyCap) reasons.push(`per-domain cap reached for ${domain} (${perDomain}/${cfg.sending.perDomainDailyCap})`);
   const senderTz = cfg.sending.timezone || HARD_TZ;
   const w = cfg.sending.window || {};
-  if (!sendAfter && inWindow(now, senderTz, w.start, w.end) === false) global.push(`outside send window ${w.start}-${w.end} (${senderTz})`);
+  if (!sendAfter && !isReply && inWindow(now, senderTz, w.start, w.end) === false) global.push(`outside send window ${w.start}-${w.end} (${senderTz})`);
   if (isQuietHours(cfg, now)) global.push(`quiet hours ${cfg.usage.quietHours.start}-${cfg.usage.quietHours.end}`);
   const gap = Number(cfg.sending.minIntervalSeconds) || 0;
   if (gap > 0) {
