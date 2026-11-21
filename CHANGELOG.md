@@ -12,7 +12,10 @@
 
 ### Changed
 - A send run stops checking messages one by one once a limit holds them all: the daily or hourly cap, the send window, quiet hours, `minIntervalSeconds` or the bounce pause. Only the first is written to the audit log, so a send loop doesn't fill the log.
-- A failed SMTP login, a connection problem or a host "sending limit exceeded" reply no longer marks the message `failed` or records a bounce. The message stays approved for the next run, and that mailbox is skipped for the rest of the run.
+- A failed SMTP login, a connection problem or a host sending-limit reply (including cPanel's "exceeded the max emails per hour") no longer marks the message `failed` or records a bounce. The message moves to the next mailbox. The failing mailbox rests for an hour (login, limit) or 10 minutes (connection), across runs. Recipient replies such as a full mailbox or an unknown user still count as bounces.
+- Only one send runs at a time per state folder; a concurrent `send` or `leo_send_approved` reports `busy`. A message rejected or suppressed during a run is no longer sent.
+- Each message is checked against the current time, so the window, quiet hours and hourly cap hold during a long run.
+- A message that stays held for the same reason is written to the audit log once, not on every run.
 
 ## 0.2.0 (unreleased)
 ### Renamed: leadwright is now Leonidas of the Web

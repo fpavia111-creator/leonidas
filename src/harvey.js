@@ -66,7 +66,7 @@ function fromHarvey(h = {}) {
       if (mb.password_env) o.passwordEnv = mb.password_env;
       if (mb.smtp_host) o.host = mb.smtp_host;
       if (mb.smtp_port) o.port = mb.smtp_port;
-      if (mb.max_daily_sends) o.dailyCap = mb.max_daily_sends;
+      if (mb.max_daily_sends) o.dailyCap = mb.max_daily_sends; // Harvey: 0 = use channels.email.max_daily_sends
       return o;
     })].filter(Boolean);
     notes.push(`channels.email.mailboxes -> sending.mailboxes (${s.mailboxes.length} mailboxes, the main one first); passwords stay in the env vars named by passwordEnv`);

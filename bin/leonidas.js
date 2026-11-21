@@ -45,6 +45,7 @@ const out = x => console.log(typeof x === 'string' ? x : JSON.stringify(x, null,
  */
 async function watchSend(seconds, { passes = Infinity, log = console.log, now } = {}) {
   const { canSend } = require('../src/deliverability');
+  const { sendReadiness } = require('../src/config');
   const every = Math.max(1, Number(seconds) || 10) * 1000;
   let last = '';
   for (let n = 0; n < passes; n++) {
@@ -52,8 +53,9 @@ async function watchSend(seconds, { passes = Infinity, log = console.log, now } 
     const lw = new Leadwright({ cfg: loadConfig(), now });
     const at = lw.now();
     const waiting = lw.outbox().some(m => m.status === 'approved' || m.status === 'scheduled');
+    const ready = sendReadiness(lw.cfg);
     const cs = canSend(lw.cfg, { sendLog: lw.sendLog(), bounces: lw.bounces(), email: 'x@example.invalid', now: at });
-    const idle = !waiting ? 'nothing approved to send' : cs.global.length ? `waiting: ${cs.global[0]}` : '';
+    const idle = !waiting ? 'nothing approved to send' : ready.length ? `not ready to send: ${ready[0]}` : cs.global.length ? `waiting: ${cs.global[0]}` : '';
     if (idle) {
       if (idle.replace(/\d+/g, '#') !== last) log(`${at.toISOString()} ${idle}`);
       last = idle.replace(/\d+/g, '#');
@@ -61,7 +63,8 @@ async function watchSend(seconds, { passes = Infinity, log = console.log, now } 
     }
     last = '';
     for (const r of lw.sendApproved({ actor: 'human' })) {
-      if (r.status === 'sent' || r.status === 'failed' || r.status === 'retry') log(`${at.toISOString()} ${r.status} ${r.id}${r.mailbox ? ` from ${r.mailbox}` : ''}${r.status !== 'sent' && r.reasons ? `: ${r.reasons.join('; ')}` : ''}`);
+      const show = ['sent', 'failed', 'retry', 'busy'].includes(r.status) || (r.status === 'held' && r.fresh);
+      if (show) log(`${at.toISOString()} ${r.status}${r.id ? ` ${r.id}` : ''}${r.mailbox ? ` from ${r.mailbox}` : ''}${r.status !== 'sent' && r.reasons ? `: ${r.reasons.join('; ')}` : ''}`);
     }
   }
 }
@@ -112,12 +115,14 @@ async function main(argv) {
     if (cfg.sending.transport !== 'smtp') throw new Error('sending.transport is not "smtp": there is no mailbox to log in to');
     const d = a.indexOf('--delay'), delay = d >= 0 ? Number(a[d + 1]) || 0 : 2000; // shared hosts throttle rapid logins
     const list = mailboxes(cfg);
+    const lw = new Leadwright({ cfg });
     let bad = 0;
     for (const [n, mb] of list.entries()) {
       if (n && delay) await new Promise(r => setTimeout(r, delay));
       const smtp = resolveSmtp({ sending: { smtp: mb.smtp } });
       try {
         const r = await verifyLogin(smtp);
+        lw._restMailbox(mb.email, null); // a working login ends a rest from an earlier failure
         out(`ok    ${mb.email}  (${smtp.host}:${smtp.port}${r.encrypted ? ', encrypted' : ''})`);
       } catch (e) { bad++; out(`FAIL  ${mb.email}  (${smtp.host}:${smtp.port}) ${e.message}`); }
     }

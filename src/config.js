@@ -108,8 +108,17 @@ function validateConfig(cfg) {
   const sm = s.smtp || {};
   if ('password' in sm || 'pass' in sm) e.push('sending.smtp.password must not be stored in config; use the env var named by sending.smtp.passwordEnv');
   if (s.transport === 'smtp') {
-    if (!sm.host) (s.mode === 'send' ? e : w).push('sending.smtp.host is not set');
-    if (![465, 587].includes(Number(sm.port))) w.push(`sending.smtp.port ${sm.port} is unusual; cPanel uses 465 (SSL) or 587 (STARTTLS)`);
+    const pooled = Array.isArray(s.mailboxes) && s.mailboxes.length > 0;
+    if (!pooled) {
+      if (!sm.host) (s.mode === 'send' ? e : w).push('sending.smtp.host is not set');
+      if (![465, 587].includes(Number(sm.port))) w.push(`sending.smtp.port ${sm.port} is unusual; cPanel uses 465 (SSL) or 587 (STARTTLS)`);
+    } else {
+      // Each mailbox may name its own server; check what each one actually resolves to.
+      require('./deliverability').mailboxes(cfg).forEach((mb, i) => {
+        if (!mb.smtp.host) (s.mode === 'send' ? e : w).push(`sending.mailboxes[${i}] has no host: set sending.smtp.host or its own host`);
+        else if (![465, 587].includes(Number(mb.smtp.port))) w.push(`sending.mailboxes[${i}] uses port ${mb.smtp.port}, which is unusual; cPanel uses 465 (SSL) or 587 (STARTTLS)`);
+      });
+    }
     if (sm.allowPlaintext) w.push('sending.smtp.allowPlaintext is true: credentials may cross the network unencrypted (testing only)');
     if (sm.rejectUnauthorized === false) w.push('sending.smtp.rejectUnauthorized is false: TLS certificate is not verified');
   }
@@ -123,9 +132,10 @@ function validateConfig(cfg) {
   if (!Array.isArray(s.mailboxes)) e.push('sending.mailboxes must be a list');
   else {
     const seen = new Set();
-    s.mailboxes.forEach((mb, i) => {
+    s.mailboxes.forEach((entry, i) => {
       const at = `sending.mailboxes[${i}]`;
-      if (!mb || typeof mb !== 'object' || Array.isArray(mb)) return e.push(`${at} must be a map with at least "email"`);
+      const mb = typeof entry === 'string' ? { email: entry } : entry;
+      if (!mb || typeof mb !== 'object' || Array.isArray(mb)) return e.push(`${at} must be an email address or a map with at least "email"`);
       if ('password' in mb || 'pass' in mb) e.push(`${at}.password must not be stored in config; use ${at}.passwordEnv`);
       const em = String(mb.email || '').trim().toLowerCase();
       if (!/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(em)) e.push(`${at}.email must be an email address`);
@@ -134,6 +144,7 @@ function validateConfig(cfg) {
       if (mb.passwordEnv !== undefined && !/^[A-Z_][A-Z0-9_]*$/.test(mb.passwordEnv)) e.push(`${at}.passwordEnv must be an environment variable name (A-Z, 0-9, _)`);
       if (mb.dailyCap !== undefined && (!isNum(mb.dailyCap) || mb.dailyCap < 0)) e.push(`${at}.dailyCap must be a non-negative number`);
       if (mb.warmupStartDate && !/^\d{4}-\d{2}-\d{2}$/.test(mb.warmupStartDate)) e.push(`${at}.warmupStartDate must be YYYY-MM-DD`);
+      if (/[\r\n"<>]/.test(mb.name || '')) e.push(`${at}.name must not contain quotes, angle brackets or line breaks`);
     });
     if (s.mailboxes.length > 1 && !s.hourlyCap) w.push('sending.mailboxes has several mailboxes but sending.hourlyCap is 0: shared hosts limit sends per hour per account (GoDaddy cPanel: 500), so set it below that');
   }
@@ -166,20 +177,21 @@ function saveConfig(cfg, dir = stateDir()) {
 /** Problems that block *sending* (drafting is always allowed). */
 function sendReadiness(cfg) {
   const p = [];
-  const pooled = Array.isArray(cfg.sending.mailboxes) && cfg.sending.mailboxes.length > 0;
+  const mbs = cfg.sending.mailboxes;
+  const pooled = Array.isArray(mbs) && mbs.length > 0;
   if (cfg.sending.mode !== 'send') p.push('sending.mode is "draft" (set it to "send" explicitly to allow delivery)');
+  if (mbs !== undefined && mbs !== null && !Array.isArray(mbs)) p.push('sending.mailboxes must be a list');
   if (!cfg.sender.email && !pooled) p.push('sender.email is not set');
   if (!cfg.sender.physicalAddress) p.push('sender.physicalAddress is not set (CAN-SPAM requires a valid postal address)');
   if (!cfg.compliance.unsubscribe.url && !cfg.compliance.unsubscribe.mailto) p.push('no unsubscribe url or mailto configured');
   if (cfg.sending.transport === 'command' && !cfg.sending.command) p.push('sending.transport is "command" but sending.command is empty');
-  if (cfg.sending.transport === 'smtp') {
-    const smtp = require('./smtp');
-    if (!pooled) p.push(...smtp.smtpProblems(cfg));
-    else {
-      // A pool keeps sending while at least one mailbox is usable; broken ones are skipped and shown in status.
-      const bad = smtp.mailboxProblems(cfg);
-      if (bad.size === cfg.sending.mailboxes.length) p.push(`no usable mailbox: ${[...bad.values()].map(x => x[0]).join('; ')}`);
-    }
+  const smtp = require('./smtp');
+  if (!pooled) { if (cfg.sending.transport === 'smtp') p.push(...smtp.smtpProblems(cfg)); }
+  else {
+    // A pool keeps sending while at least one mailbox is usable; broken ones are skipped and shown in status.
+    const bad = smtp.mailboxProblems(cfg);
+    const usable = require('./deliverability').mailboxes(cfg).filter(mb => !bad.has(mb.email)).length;
+    if (!usable) p.push(`no usable mailbox: ${[...bad.values()].map(x => x[0]).join('; ')}`);
   }
   return p;
 }

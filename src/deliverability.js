@@ -38,7 +38,9 @@ function mailboxes(cfg) {
   const s = cfg.sending, base = s.smtp || {};
   const list = Array.isArray(s.mailboxes) ? s.mailboxes : [];
   if (!list.length) return [{ email: cfg.sender.email, name: cfg.sender.name, smtp: base, dailyCap: s.dailyCap, warmupStartDate: (s.warmup && s.warmup.startDate) || '', pooled: false }];
-  return list.map(mb => {
+  return list.map(raw => {
+    // "- you@domain.com" is shorthand for "- email: you@domain.com"; anything else unusable becomes an empty entry.
+    const mb = typeof raw === 'string' ? { email: raw } : raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
     const smtp = { ...base, user: mb.user || mb.email, passwordEnv: mb.passwordEnv || base.passwordEnv };
     for (const k of ['host', 'port', 'secure']) if (mb[k] !== undefined && mb[k] !== '') smtp[k] = mb[k];
     if (mb.port !== undefined && mb.port !== '' && (mb.secure === undefined || mb.secure === '')) smtp.secure = null; // derive TLS mode from this mailbox's port
@@ -57,7 +59,7 @@ function poolCapacity(cfg, today) {
 }
 
 /** Which mailbox a send-log row went out from (rows written before pools existed have none). */
-function rowMailbox(cfg, r) { return String(r.mailbox || cfg.sender.email || '').toLowerCase(); }
+function rowMailbox(cfg, r) { return String(r.mailbox !== undefined && r.mailbox !== null ? r.mailbox : cfg.sender.email || '').toLowerCase(); }
 
 /**
  * Pick the mailbox for one message: the one that last wrote to this recipient (so a thread stays
@@ -66,7 +68,7 @@ function rowMailbox(cfg, r) { return String(r.mailbox || cfg.sender.email || '')
  */
 function pickMailbox(cfg, { sendLog, now = new Date(), to, exclude = new Map() }) {
   const pool = mailboxes(cfg);
-  if (!pool[0].pooled) return exclude.has(pool[0].email) ? { mailbox: null, reason: `mailbox ${pool[0].email} can't send right now (${exclude.get(pool[0].email)})` } : { mailbox: pool[0], reason: null };
+  if (!pool[0].pooled) return exclude.has(pool[0].email) ? { mailbox: null, global: true, reason: `mailbox ${pool[0].email} can't send right now (${exclude.get(pool[0].email)})` } : { mailbox: pool[0], reason: null };
   const day = dayKey(now, cfg.sending.timezone);
   const today = sendLog.filter(r => r.day === day && r.status === 'sent');
   const used = mb => today.filter(r => rowMailbox(cfg, r) === mb.email).length;
@@ -81,8 +83,9 @@ function pickMailbox(cfg, { sendLog, now = new Date(), to, exclude = new Map() }
   }
   const free = pool.filter(mb => !exclude.has(mb.email) && room(mb));
   if (!free.length) {
+    // Nothing in the pool can take any new recipient, so this holds every message, not just this one.
     const down = pool.filter(mb => exclude.has(mb.email)).length;
-    return { mailbox: null, reason: `no mailbox can send: ${pool.length - down} at their daily cap${down ? `, ${down} unavailable` : ''}` };
+    return { mailbox: null, global: true, reason: `no mailbox can send: ${pool.length - down} at their daily cap${down ? `, ${down} unavailable` : ''}` };
   }
   free.sort((a, b) => used(a) - used(b));
   return { mailbox: free[0], reason: null };

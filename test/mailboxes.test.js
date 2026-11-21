@@ -103,10 +103,63 @@ describe('mailbox pool (file transport)', () => {
     const lines = [];
     let t = TUE.getTime();
     try { await watchSend(1, { passes: 3, log: l => lines.push(l), now: () => new Date(t += 1000) }); } finally { if (prev === undefined) delete process.env.LEONIDAS_HOME; else process.env.LEONIDAS_HOME = prev; }
-    assert.equal(lines.length, 2);
+    assert.equal(lines.length, 3);
     assert.match(lines[0], /sent msg_\w+ from a@acme\.test$/);
-    assert.match(lines[1], /waiting: send interval/);
+    assert.match(lines[1], /held msg_\w+: send interval/);
+    assert.match(lines[2], /waiting: send interval/);
     assert.equal(i.sendLog().length, 1);
+  });
+
+  it('send --watch waits quietly while sending is not ready (draft mode)', async () => {
+    const { watchSend } = require('../bin/leonidas');
+    const i = lw({ over: { sending: { mode: 'draft', mailboxes: POOL } } });
+    fs.writeFileSync(path.join(i.dir, 'config.json'), JSON.stringify(i.cfg));
+    queue(i, lead(0));
+    const prev = process.env.LEONIDAS_HOME; process.env.LEONIDAS_HOME = i.dir;
+    const lines = [];
+    try { await watchSend(1, { passes: 2, log: l => lines.push(l), now: () => TUE }); } finally { if (prev === undefined) delete process.env.LEONIDAS_HOME; else process.env.LEONIDAS_HOME = prev; }
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /not ready to send: sending\.mode is "draft"/);
+    assert.equal(i.audit.all().filter(e => e.action === 'send_blocked').length, 0);
+  });
+
+  it('a held message is audited again only when its reason changes', () => {
+    const i = lw({ over: { sending: { mailboxes: POOL } } });
+    const { added: [l] } = i.addLeads([{ ...lead(0), emailVerified: false }]);
+    const m = i.queueEmail({ leadId: l.id, ...GOOD, why: 'x' }); i.approve(m.id);
+    for (let n = 0; n < 3; n++) assert.equal(i.sendApproved()[0].status, 'held');
+    assert.equal(i.audit.all().filter(e => e.action === 'send_blocked').length, 1);
+  });
+
+  it('only one send runs at a time; a lock from a dead process is taken over', () => {
+    const i = lw({ over: { sending: { mailboxes: POOL } } });
+    queue(i, lead(0));
+    const lock = path.join(i.dir, 'send.lock');
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
+    assert.deepEqual(i.sendApproved().map(r => r.status), ['busy']);
+    fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 7 })); // no such process
+    assert.deepEqual(i.sendApproved().map(r => r.status), ['sent']);
+    assert.equal(fs.existsSync(lock), false);
+  });
+
+  it('a message rejected after the run started is not sent', () => {
+    const i = lw({ over: { sending: { mailboxes: POOL } } });
+    const ms = [0, 1].map(n => queue(i, lead(n)));
+    const orig = i._deliver.bind(i);
+    i._deliver = (m, mb) => { if (m.id === ms[0].id) i.reject(ms[1].id, { reason: 'changed my mind' }); return orig(m, mb); };
+    assert.deepEqual(i.sendApproved().map(r => r.status), ['sent']);
+    assert.equal(i.outbox().find(x => x.id === ms[1].id).status, 'rejected');
+  });
+
+  it('entries without a usable address are skipped; plain addresses are shorthand', () => {
+    const i = lw({ over: { sender: { email: '' }, sending: { mailboxes: [{ user: 'u@acme.test' }, 'b@acme.test'] } } });
+    [0, 1].forEach(n => queue(i, lead(n)));
+    assert.deepEqual(i.sendApproved().map(r => r.mailbox), ['b@acme.test', 'b@acme.test']);
+    assert.match(i.status().mailboxes[0].problems.join(), /is not an email address/);
+    const j = lw({ over: { sender: { email: '' }, sending: { mailboxes: [{ user: 'u@acme.test' }] } } });
+    assert.match(sendReadiness(j.cfg).join(), /no usable mailbox/);
+    const k = lw({ over: { sending: { mailboxes: { a: 'a@acme.test' } } } });
+    assert.match(sendReadiness(k.cfg).join(), /sending\.mailboxes must be a list/);
   });
 
   it('a bounce is credited to the mailbox that sent to that address', () => {
@@ -128,6 +181,12 @@ describe('mailbox pool config', () => {
     assert.match(v([{ email: 'nope' }]).errors.join(), /must be an email address/);
     assert.match(v([{ email: 'a@acme.test', dailyCap: -1 }]).errors.join(), /dailyCap must be a non-negative number/);
     assert.deepEqual(v([{ email: 'a@acme.test', passwordEnv: 'PW_A', dailyCap: 20 }]).errors, []);
+  });
+  it('checks each mailbox\'s own server when the pool has no shared host', () => {
+    const c = cfg({ sending: { transport: 'smtp', hourlyCap: 100, smtp: { host: '' }, mailboxes: [{ email: 'a@one.test', host: 'mail.one.test', port: 465 }, { email: 'b@two.test', host: 'mail.two.test', port: 587 }] } });
+    assert.deepEqual(validateConfig(c).errors, []);
+    const d = cfg({ sending: { transport: 'smtp', hourlyCap: 100, smtp: { host: '' }, mailboxes: [{ email: 'a@one.test', host: 'mail.one.test' }, { email: 'b@two.test' }] } });
+    assert.match(validateConfig(d).errors.join(), /mailboxes\[1\] has no host/);
   });
   it('warns when several mailboxes have no hourly cap', () => {
     assert.match(v(POOL).warnings.join(), /hourlyCap is 0/);
@@ -170,6 +229,9 @@ describe('Harvey mailbox import', () => {
       { email: 'f2@two.test', passwordEnv: 'MAILBOX_PASSWORD', host: 'mail.two.test', port: 465 },
     ]);
     assert.ok(notes.some(n => /off@one\.test/.test(n)) && notes.some(n => /send_ramp is not carried over/.test(n)));
+    // Harvey: a mailbox's max_daily_sends of 0 means "use the channel's max_daily_sends", so no override is written.
+    const z = fromHarvey(yaml.parse(H.replace('f1@one.test, password_env', 'f1@one.test, max_daily_sends: 0, password_env')).value).config;
+    assert.equal(z.sending.mailboxes[1].dailyCap, undefined);
     const c = cfg({ sending: { ...config.sending, smtp: { host: 'mail.one.test', port: 587 } } });
     assert.deepEqual(validateConfig(c).errors, []);
     const [, f1, f2] = mailboxes(c);
@@ -230,15 +292,32 @@ describe('mailbox pool over smtp (fake server in a child process)', { skip: !hav
     assert.deepEqual(sent().slice(-2).map(m => [m.authUser, m.from]), [['a@acme.test', 'a@acme.test'], ['b@acme.test', 'b@acme.test']]);
   });
 
-  it('a mailbox whose login fails is skipped for the run; its message stays queued', () => {
+  it('a mailbox whose login fails hands its message to another and rests across runs', () => {
     const before = sent().length;
     const i = inst('wrong');
     const ms = [0, 1, 2].map(n => queue(i, lead(n)));
     const r = i.sendApproved();
-    assert.deepEqual(r.map(x => [x.status, x.mailbox]), [['sent', 'a@acme.test'], ['retry', 'b@acme.test'], ['sent', 'a@acme.test']]);
-    assert.equal(i.outbox().find(x => x.id === ms[1].id).status, 'approved');
+    assert.deepEqual(r.map(x => [x.id === ms[1].id ? 1 : x.id === ms[0].id ? 0 : 2, x.status, x.mailbox]), [[0, 'sent', 'a@acme.test'], [1, 'retry', 'b@acme.test'], [1, 'sent', 'a@acme.test'], [2, 'sent', 'a@acme.test']]);
     assert.equal(i.bounces().length, 0);
-    assert.equal(sent().length, before + 2);
+    assert.equal(sent().length, before + 3);
+    assert.match(i.status().mailboxes[1].restingUntil, /^2026-10-20T16:00/); // AUTH failure: an hour
+    queue(i, lead(3));
+    assert.deepEqual(i.sendApproved().map(x => [x.status, x.mailbox]), [['sent', 'a@acme.test']]); // no new login as b
+    i.setNow(new Date(TUE.getTime() + 61 * 60000));
+    queue(i, lead(4));
+    assert.deepEqual(i.sendApproved().map(x => x.mailbox), ['b@acme.test', 'a@acme.test']); // rest over: b tried again
+  });
+
+  it('cPanel\'s hourly-limit reply rests the mailbox instead of bouncing the recipient', () => {
+    const { isMailboxFault } = require('../src/smtp');
+    assert.equal(isMailboxFault('RCPT TO', 'RCPT TO failed: 550 Domain acme.test has exceeded the max emails per hour (500/500 (100%)) allowed. Message discarded.'), true);
+    assert.equal(isMailboxFault('DATA end', 'DATA end failed: 550 Domain acme.test has exceeded the max defers and failures per hour (5/5 (100%)) allowed.'), true);
+    assert.equal(isMailboxFault('RCPT TO', 'RCPT TO failed: 552 5.2.2 Mailbox size exceeded the maximum allowed'), false);
+    assert.equal(isMailboxFault('RCPT TO', 'RCPT TO failed: 450 4.2.1 Recipient rate limit exceeded'), false);
+    assert.equal(isMailboxFault('RCPT TO', 'RCPT TO failed: 550 5.1.1 <ratelimit@acme.test>: Recipient address rejected: User unknown'), false);
+    assert.equal(isMailboxFault('RCPT TO', 'RCPT TO failed: 550 5.1.1 sending-limit@acme.test user unknown'), false);
+    assert.equal(isMailboxFault('AUTH', 'AUTH failed: 535 5.7.8 bad credentials'), true);
+    assert.equal(isMailboxFault(null, 'self-signed certificate'), true);
   });
 
   it('a host sending limit is not recorded as a bounce', () => {
