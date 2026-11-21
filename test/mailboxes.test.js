@@ -177,6 +177,29 @@ describe('Harvey mailbox import', () => {
   });
 });
 
+describe('Harvey contacts import', () => {
+  it('suppresses opt-outs and invalid addresses, skips people already emailed, keeps verification', () => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(cfg()));
+    const csv = path.join(dir, 'contacts.csv');
+    fs.writeFileSync(csv, [
+      'email,first_name,last_name,company_name,title,website,linkedin_url,industry,personalization,email_status,score,seniority,source,status,created_at',
+      'ann@shop1.test,Ann,Lee,Shop One,Owner,shop1.test,,restaurant,,verified,80,,sa_local,new,2026-11-12',
+      'bob@shop2.test,Bob,,Shop Two,Owner,,,salon,,guess,50,,tx_notary,new,2026-11-12',
+      'cat@shop3.test,Cat,,Shop Three,Owner,,,salon,,verified,50,,sa_local,opted_out,2026-11-12',
+      'dan@shop4.test,Dan,,Shop Four,Owner,,,salon,,invalid,50,,sa_local,new,2026-11-12',
+      'eve@shop5.test,Eve,,Shop Five,Owner,,,salon,,verified,50,,sa_local,contacted,2026-11-12',
+      'fay@shop6.test,Fay,,Shop Six,Owner,,,salon,,verified,50,,sa_local,replied,2026-11-12', '',
+    ].join('\n'));
+    const r = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, '..', 'bin', 'leonidas.js'), 'import-harvey-contacts', csv], { env: { ...process.env, LEONIDAS_HOME: dir }, encoding: 'utf8' }));
+    assert.deepEqual(r, { added: 2, verified: 1, doNotContact: 2, leftOut: { 'already contacted in Harvey': 1, 'already replied in Harvey': 1 }, skipped: 0 });
+    const { Leadwright } = require('../src/engine');
+    const i = new Leadwright({ dir, cfg: cfg() });
+    assert.deepEqual(i.leads().map(l => [l.email, l.name, l.company, l.verification]), [['ann@shop1.test', 'Ann Lee', 'Shop One', 'verified'], ['bob@shop2.test', 'Bob', 'Shop Two', 'guess']]);
+    assert.ok(i.suppression.match('cat@shop3.test') && i.suppression.match('dan@shop4.test'));
+  });
+});
+
 // self-signed cert for localhost, generated once with openssl
 let KEY, CERT;
 let haveOpenssl = true;

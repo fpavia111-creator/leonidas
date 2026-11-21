@@ -131,6 +131,8 @@ Leonidas sends each message from the least-used mailbox that has room today. Mai
 leonidas import-harvey harvey.yaml .leonidas/config.yaml   # convert a Harvey-style config (persona/product/offer/icp/channels/usage/brain)
 leonidas config check [file]                               # schema and safety check; exit code 1 on errors
 ```
+`leonidas import-harvey-contacts contacts.csv` adds the prospects from a Harvey contacts export (`harvey export --all`). Opt-outs and invalid addresses go to the do-not-contact list, and prospects Harvey already emailed, or who replied or booked, are left out. Harvey's `email_status: verified` counts as verified.
+
 `import-harvey` maps snake_case Harvey fields onto this schema and prints a note for each change. For example, `meeting_duration: 10 minutes` becomes `meetingDurationMinutes: 10`, `company_size: 1-20 employees` becomes `"1-20"`, and `provider: smtp` becomes `transport: smtp`. Duplicate YAML keys are reported (the last value wins). Imported configs always start in `draft` mode. `config check` warns about risky values: send days other than Tue/Wed, `sendUnverified: true`, approval turned off, plaintext SMTP. See [`examples/local-web-agency.yaml`](examples/local-web-agency.yaml) for a full example with placeholders.
 
 ## Pro ($11 launch price)

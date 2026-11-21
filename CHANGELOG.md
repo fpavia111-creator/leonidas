@@ -7,6 +7,7 @@
 - `leonidas mailboxes test` logs in to every sending mailbox and logs out, without sending anything.
 - `leonidas send --watch [seconds]` keeps running and sends as the limits allow. It prints only deliveries, failures and changes in what it is waiting for.
 - `import-harvey` carries over `channels.email.mailboxes` (the main mailbox first) and `max_hourly_sends`.
+- `leonidas import-harvey-contacts <csv>` imports a Harvey contacts export. Opt-outs and invalid addresses go to do-not-contact, and prospects Harvey already wrote to are left out.
 - The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
 
 ### Changed

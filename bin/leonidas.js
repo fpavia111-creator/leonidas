@@ -2,7 +2,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { Leadwright } = require('../src/engine');
+const { Leadwright, isVerified } = require('../src/engine');
 const { DEFAULTS, stateDir, saveConfig, loadConfig, configPath } = require('../src/config');
 const { listTemplates } = require('../src/icp');
 const { toCsv, parseCsv } = require('../src/export');
@@ -32,7 +32,9 @@ Usage: leonidas <command> [args]   ("leadwright" still works but is deprecated)
   dns <domain> [dkimSelector]    SPF / DMARC / DKIM check
   config check [file]            validate a config (.json/.yaml; default $LEONIDAS_CONFIG or .leonidas/config.*)
   mailboxes test                 log in to every sending mailbox over SMTP and log out (sends nothing)
-  import-harvey <in.yaml> [out]  convert a Harvey-style YAML config to Leonidas YAML (stdout if no out)`;
+  import-harvey <in.yaml> [out]  convert a Harvey-style YAML config to Leonidas YAML (stdout if no out)
+  import-harvey-contacts <csv>   add leads from a Harvey contacts export; opt-outs and invalid addresses
+                                 go to do-not-contact, prospects Harvey already emailed are left out`;
 
 const out = x => console.log(typeof x === 'string' ? x : JSON.stringify(x, null, 2));
 
@@ -126,6 +128,12 @@ async function main(argv) {
   const lw = new Leadwright({ cfg: loadConfig() });
   switch (cmd) {
     case 'status': return out(lw.status());
+    case 'import-harvey-contacts': {
+      const { leads, suppress, skipped } = require('../src/harvey').fromHarveyContacts(parseCsv(fs.readFileSync(path.resolve(a[0]), 'utf8')));
+      for (const s of suppress) if (!lw.suppression.match(s.email)) lw.suppress(s.email, { reason: s.reason, actor: 'human' });
+      const r = lw.addLeads(leads, { source: 'harvey', reason: `imported from Harvey export ${path.basename(a[0])}` });
+      return out({ added: r.added.length, verified: r.added.filter(l => isVerified(l)).length, doNotContact: suppress.length, leftOut: skipped, skipped: r.skipped.length });
+    }
     case 'import': { const r = lw.addLeads(parseCsv(fs.readFileSync(path.resolve(a[0]), 'utf8')), { source: 'csv', reason: `imported from ${path.basename(a[0])}` }); return out({ added: r.added.length, skipped: r.skipped }); }
     case 'export': return process.stdout.write(toCsv(lw.leads()));
     case 'outbox': return out(lw.outbox().filter(m => !a[0] || m.status === a[0]).map(m => `${m.id}  ${m.status.padEnd(16)} ${m.to}  "${m.subject}"${m.sendAfter ? '  after ' + m.sendAfter : ''}${m.status === 'blocked' ? '  ' + m.gate.errors.join('; ') : ''}`).join('\n') || '(empty)');
