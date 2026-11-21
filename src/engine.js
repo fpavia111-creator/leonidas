@@ -12,7 +12,7 @@ const { loadConfig, stateDir, sendReadiness } = require('./config');
 const { Suppression, normalizeEmail } = require('./suppression');
 const { AuditLog } = require('./audit');
 const { checkEmail, renderFooter } = require('./compliance');
-const { canSend, classifyBounce, bounceStats, dayKey, effectiveDailyCap, allowedDays, isQuietHours } = require('./deliverability');
+const { canSend, classifyBounce, bounceStats, dayKey, poolCapacity, allowedDays, isQuietHours, mailboxes, mailboxCap, pickMailbox, rowMailbox } = require('./deliverability');
 const { resolveIcp, scoreLead } = require('./icp');
 
 /** A lead counts as verified if a verifier marked it so (emailVerified true or verification "valid"/"verified"). */
@@ -106,16 +106,33 @@ class Leadwright {
     return m;
   }
 
-  /** Send approved messages that pass every live check. Returns per-message results. */
+  /**
+   * Send approved messages that pass every live check. Returns per-message results.
+   * Only one send runs at a time per state dir: a concurrent call returns [{status: 'busy'}].
+   */
   sendApproved({ actor = 'human', ids } = {}) {
+    const unlock = this._lock();
+    if (!unlock.ok) return [{ id: null, status: 'busy', reasons: [`another send is running (pid ${unlock.pid})`] }];
+    try { return this._sendApproved({ actor, ids }); } finally { unlock.release(); }
+  }
+
+  _sendApproved({ actor, ids }) {
     const results = [];
     const ready = sendReadiness(this.cfg);
-    const now = this.now();
+    // Mailboxes that can't send: bad settings, or resting after a failed login, a host limit or a
+    // connection problem (rests are kept across runs). email -> reason.
+    const down = new Map();
+    for (const [mb, p] of require('./smtp').mailboxProblems(this.cfg)) down.set(mb, p.join('; '));
+    for (const [mb, r] of Object.entries(this.mailboxRests())) down.set(mb, `resting until ${r.until} after: ${r.reason}`);
+    // Once a limit that holds every message is hit (cap, window, send interval...), the rest wait unchecked.
+    let stop = null;
     for (const m of this.outbox()) {
+      const now = this.now();
       if (ids && !ids.includes(m.id)) continue;
       if (m.status !== 'approved' && m.status !== 'scheduled') continue;
       if (m.status === 'scheduled' && m.sendAfter && dayKey(now, this._tz(m)) < m.sendAfter) { results.push({ id: m.id, status: 'scheduled', sendAfter: m.sendAfter }); continue; }
       if (this.cfg.approval.required && !m.approvedBy) { results.push({ id: m.id, status: 'skipped', reasons: ['not approved'] }); continue; }
+      if (stop) { results.push({ id: m.id, status: 'held', reasons: stop }); continue; }
       const reasons = [...ready];
       const recheck = checkEmail(m, { cfg: this.cfg, suppression: this.suppression, kind: m.kind });
       reasons.push(...recheck.errors);
@@ -123,53 +140,124 @@ class Leadwright {
       if (m.kind !== 'reply' && !this.cfg.sending.sendUnverified && !isVerified(lead)) reasons.push(`recipient ${m.to} is not verified (sending.sendUnverified=false); verify it and set lead.emailVerified=true`);
       const cs = canSend(this.cfg, { sendLog: this.sendLog(), bounces: this.bounces(), email: m.to, now, recipientTz: lead.timezone });
       if (cs.dayBlocked && reasons.length === 0) {
-        this._update(m.id, x => { x.status = 'scheduled'; x.sendAfter = cs.sendAfter; });
-        this.audit.record({ action: 'send_blocked', leadId: m.leadId, messageId: m.id, actor, reason: cs.reasons[0], data: { sendAfter: cs.sendAfter } });
+        if (m.status !== 'scheduled' || m.sendAfter !== cs.sendAfter) {
+          this._update(m.id, x => { x.status = 'scheduled'; x.sendAfter = cs.sendAfter; });
+          this.audit.record({ action: 'send_blocked', leadId: m.leadId, messageId: m.id, actor, reason: cs.reasons[0], data: { sendAfter: cs.sendAfter } });
+        }
         results.push({ id: m.id, status: 'scheduled', sendAfter: cs.sendAfter, reasons: cs.reasons });
         continue;
       }
       reasons.push(...cs.reasons);
       if (reasons.length) {
-        this.audit.record({ action: 'send_blocked', leadId: m.leadId, messageId: m.id, actor, reason: reasons.join('; ') });
-        results.push({ id: m.id, status: 'held', reasons });
+        results.push(this._hold(m, reasons, actor));
+        if (cs.global.length) stop = cs.global;
         continue;
       }
-      let transportId;
-      try { transportId = this._deliver(m); } catch (e) {
-        const permanent = !!e.permanent;
-        if (permanent && /RCPT/.test(e.stage || '')) this.recordBounce({ email: m.to, code: String(e.code), diagnostic: e.message, actor: 'system' });
-        if (permanent) this._update(m.id, x => { x.status = 'failed'; x.error = e.message; });
-        this.audit.record({ action: 'send_failed', leadId: m.leadId, messageId: m.id, actor, reason: e.message, data: { code: e.code || null, stage: e.stage || null, permanent } });
-        results.push({ id: m.id, status: permanent ? 'failed' : 'retry', reasons: [e.message] });
-        continue;
+      // Re-read right before delivering: a human may have rejected or suppressed it meanwhile.
+      const cur = this.outbox().find(x => x.id === m.id);
+      if (!cur || !['approved', 'scheduled'].includes(cur.status)) continue;
+      // Try mailboxes until one delivers, the recipient fails, or none is left.
+      for (;;) {
+        const pick = pickMailbox(this.cfg, { sendLog: this.sendLog(), now: this.now(), to: m.to, exclude: down });
+        if (!pick.mailbox) {
+          results.push(this._hold(m, [pick.reason], actor));
+          if (pick.global) stop = [pick.reason];
+          break;
+        }
+        const mb = pick.mailbox;
+        let transportId;
+        try { transportId = this._deliver(m, mb); } catch (e) {
+          const { isMailboxFault, restMinutes } = require('./smtp');
+          if (this.cfg.sending.transport === 'smtp' && isMailboxFault(e.stage, e.message)) {
+            // The mailbox or account failed, not the recipient: rest the mailbox and try the next one.
+            const rest = this._restMailbox(mb.email, e, restMinutes(e.stage, e.message));
+            down.set(mb.email, `resting until ${rest.until} after: ${rest.reason}`);
+            this.audit.record({ action: 'send_failed', leadId: m.leadId, messageId: m.id, actor, reason: e.message, data: { code: e.code || null, stage: e.stage || null, permanent: false, mailbox: mb.email, mailboxFault: true, restingUntil: rest.until } });
+            results.push({ id: m.id, status: 'retry', reasons: [`${mb.email}: ${e.message}`], mailbox: mb.email });
+            continue;
+          }
+          const permanent = !!e.permanent;
+          if (permanent && /RCPT/.test(e.stage || '')) this.recordBounce({ email: m.to, code: String(e.code), diagnostic: e.message, actor: 'system', mailbox: mb.email });
+          if (permanent) this._update(m.id, x => { x.status = 'failed'; x.error = e.message; });
+          this.audit.record({ action: 'send_failed', leadId: m.leadId, messageId: m.id, actor, reason: e.message, data: { code: e.code || null, stage: e.stage || null, permanent, mailbox: mb.email } });
+          results.push({ id: m.id, status: permanent ? 'failed' : 'retry', reasons: [e.message], mailbox: mb.email });
+          break;
+        }
+        const at = this.now().toISOString();
+        this.store.append('sends.jsonl', { id: m.id, to: m.to, day: cs.day, ts: at, status: 'sent', transportId, mailbox: mb.email });
+        this._update(m.id, x => { x.status = 'sent'; x.sentAt = at; x.from = mb.email; delete x.heldReason; });
+        this._restMailbox(mb.email, null);
+        this.audit.record({ action: 'sent', leadId: m.leadId, messageId: m.id, actor, reason: m.why, data: { transport: this.cfg.sending.transport, approvedBy: m.approvedBy, mailbox: mb.email } });
+        results.push({ id: m.id, status: 'sent', mailbox: mb.email });
+        break;
       }
-      const day = cs.day;
-      this.store.append('sends.jsonl', { id: m.id, to: m.to, day, ts: now.toISOString(), status: 'sent', transportId });
-      this._update(m.id, x => { x.status = 'sent'; x.sentAt = now.toISOString(); });
-      this.audit.record({ action: 'sent', leadId: m.leadId, messageId: m.id, actor, reason: m.why, data: { transport: this.cfg.sending.transport, approvedBy: m.approvedBy } });
-      results.push({ id: m.id, status: 'sent' });
     }
     return results;
   }
 
+  /** Hold a message; audit it only when the reason differs from last time (numbers ignored). */
+  _hold(m, reasons, actor) {
+    const key = reasons.join('; ').replace(/\d+/g, '#');
+    const fresh = m.heldReason !== key;
+    if (fresh) {
+      this.audit.record({ action: 'send_blocked', leadId: m.leadId, messageId: m.id, actor, reason: reasons.join('; ') });
+      this._update(m.id, x => { x.heldReason = key; });
+      m.heldReason = key;
+    }
+    return { id: m.id, status: 'held', reasons, ...(fresh ? { fresh: true } : {}) };
+  }
+
+  /** Mailboxes resting after a fault, still in their rest period: email -> {until, reason, stage}. */
+  mailboxRests() {
+    const now = this.now().getTime();
+    return Object.fromEntries(Object.entries(this.store.readJson('mailbox-rests.json', {})).filter(([, r]) => Date.parse(r.until) > now));
+  }
+
+  /** Rest a mailbox for `minutes` after error `e`, or clear its rest when e is null. Returns the rest. */
+  _restMailbox(email, e, minutes = 0) {
+    const all = this.store.readJson('mailbox-rests.json', {});
+    if (!e) { if (all[email]) { delete all[email]; this.store.writeJson('mailbox-rests.json', all); } return null; }
+    const r = { until: new Date(this.now().getTime() + minutes * 60000).toISOString(), reason: e.message, stage: e.stage || null };
+    all[email] = r; this.store.writeJson('mailbox-rests.json', all);
+    return r;
+  }
+
+  /** Exclusive per-state-dir send lock. A lock left by a process that no longer runs is taken over. */
+  _lock() {
+    const p = path.join(this.dir, 'send.lock');
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.writeFileSync(p, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' });
+        return { ok: true, release: () => fs.rmSync(p, { force: true }) };
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+        let pid = null; try { pid = JSON.parse(fs.readFileSync(p, 'utf8')).pid; } catch { /* unreadable: treat as stale */ }
+        let alive = false;
+        if (pid) try { process.kill(pid, 0); alive = true; } catch (k) { alive = k.code === 'EPERM'; }
+        if (alive) return { ok: false, pid };
+        fs.rmSync(p, { force: true });
+      }
+    }
+    return { ok: false, pid: null };
+  }
+
   _tz(m) { const l = this.getLead(m.leadId); return (l && l.timezone) || this.cfg.sending.timezone; }
 
-  _eml(m) {
-    const s = this.cfg.sender;
+  _eml(m, mb = mailboxes(this.cfg)[0]) {
     const unsub = this.cfg.compliance.unsubscribe;
     const lu = [unsub.mailto && `<mailto:${unsub.mailto}?subject=unsubscribe>`, unsub.url && `<${unsub.url}>`].filter(Boolean).join(', ');
-    const headers = [`From: ${s.name ? `"${s.name}" ` : ''}<${s.email}>`, `To: <${m.to}>`, `Subject: ${m.subject}`, lu && `List-Unsubscribe: ${lu}`, unsub.url && 'List-Unsubscribe-Post: List-Unsubscribe=One-Click', `X-Leadwright-Id: ${m.id}`, 'Content-Type: text/plain; charset=utf-8'].filter(Boolean);
+    const headers = [`From: ${mb.name ? `"${mb.name}" ` : ''}<${mb.email}>`, `To: <${m.to}>`, `Subject: ${m.subject}`, lu && `List-Unsubscribe: ${lu}`, unsub.url && 'List-Unsubscribe-Post: List-Unsubscribe=One-Click', `X-Leadwright-Id: ${m.id}`, 'Content-Type: text/plain; charset=utf-8'].filter(Boolean);
     return headers.join('\r\n') + '\r\n\r\n' + m.body.replace(/\r?\n/g, '\r\n') + '\r\n';
   }
 
-  _deliver(m) {
-    const eml = this._eml(m);
+  _deliver(m, mb = mailboxes(this.cfg)[0]) {
+    const eml = this._eml(m, mb);
     if (this.cfg.sending.transport === 'smtp') {
       // SMTP is async; run it in a short-lived child so the send loop stays synchronous and sequential.
       const { resolveSmtp } = require('./smtp');
-      const smtp = resolveSmtp(this.cfg);
+      const smtp = resolveSmtp({ sending: { smtp: mb.smtp } });
       const outp = execFileSync(process.execPath, [path.join(__dirname, 'smtp-worker.js')], {
-        input: JSON.stringify({ smtp, envelope: { from: this.cfg.sender.email, to: m.to }, eml }),
+        input: JSON.stringify({ smtp, envelope: { from: mb.email, to: m.to }, eml }),
         env: process.env, timeout: (smtp.timeoutMs || 30000) * 3, encoding: 'utf8',
       });
       const r = JSON.parse(outp);
@@ -188,10 +276,13 @@ class Leadwright {
     return f;
   }
 
-  recordBounce({ email, code = '', diagnostic = '', actor = 'system' }) {
+  recordBounce({ email, code = '', diagnostic = '', actor = 'system', mailbox }) {
     const type = classifyBounce(code, diagnostic);
     const e = normalizeEmail(email);
-    const b = this.bounces(); b.push({ email: e, type, code, diagnostic, ts: this.now().toISOString() });
+    // Attribute the bounce to the mailbox that last wrote to this address, when not given.
+    const last = mailbox ? null : this.sendLog().filter(r => r.status === 'sent' && normalizeEmail(r.to) === e).pop();
+    const from = mailbox || (last ? rowMailbox(this.cfg, last) : undefined);
+    const b = this.bounces(); b.push({ email: e, type, code, diagnostic, ts: this.now().toISOString(), ...(from ? { mailbox: from } : {}) });
     this.store.writeJson('bounces.json', b);
     const lead = this.getLead(e);
     if (type === 'hard' || type === 'complaint') {
@@ -225,8 +316,17 @@ class Leadwright {
     const day = dayKey(now, this.cfg.sending.timezone);
     const counts = {};
     for (const m of this.outbox()) counts[m.status] = (counts[m.status] || 0) + 1;
-    const cs = canSend(this.cfg, { sendLog: this.sendLog(), bounces: this.bounces(), email: 'x@example.invalid', now });
-    return { mode: this.cfg.sending.mode, sendReadiness: sendReadiness(this.cfg), leads: this.leads().length, outbox: counts, today: day, sentToday: cs.used, capToday: effectiveDailyCap(this.cfg, day), allowedDays: allowedDays(this.cfg), sendWindow: this.cfg.sending.window, quietHoursNow: isQuietHours(this.cfg, now), usageBudgetPercent: this.cfg.usage.maxDailyBrainPercent, approvalRequired: this.cfg.approval.required, sendUnverified: this.cfg.sending.sendUnverified, sendDayToday: !cs.dayBlocked, nextSendDay: cs.sendAfter || day, bounces: bounceStats(this.sendLog(), this.bounces()), suppressed: this.suppression.list().length, audit: this.audit.verify() };
+    const sendLog = this.sendLog();
+    const cs = canSend(this.cfg, { sendLog, bounces: this.bounces(), email: 'x@example.invalid', now });
+    const problems = require('./smtp').mailboxProblems(this.cfg);
+    const rests = this.mailboxRests();
+    const sentToday = sendLog.filter(r => r.day === day && r.status === 'sent');
+    const perMailbox = mailboxes(this.cfg).filter(mb => mb.pooled).map(mb => ({
+      email: mb.email, sentToday: sentToday.filter(r => rowMailbox(this.cfg, r) === mb.email).length, capToday: mailboxCap(this.cfg, mb, day),
+      hardBounces: this.bounces().filter(b => b.type === 'hard' && b.mailbox === mb.email).length, problems: problems.get(mb.email) || [],
+      ...(rests[mb.email] ? { restingUntil: rests[mb.email].until, restReason: rests[mb.email].reason } : {}),
+    }));
+    return { mode: this.cfg.sending.mode, sendReadiness: sendReadiness(this.cfg), leads: this.leads().length, outbox: counts, today: day, sentToday: cs.used, capToday: poolCapacity(this.cfg, day), hourlyCap: this.cfg.sending.hourlyCap || null, ...(perMailbox.length ? { mailboxes: perMailbox } : Object.keys(rests).length ? { resting: rests } : {}), allowedDays: allowedDays(this.cfg), sendWindow: this.cfg.sending.window, quietHoursNow: isQuietHours(this.cfg, now), usageBudgetPercent: this.cfg.usage.maxDailyBrainPercent, approvalRequired: this.cfg.approval.required, sendUnverified: this.cfg.sending.sendUnverified, sendDayToday: !cs.dayBlocked, nextSendDay: cs.sendAfter || day, bounces: bounceStats(this.sendLog(), this.bounces()), suppressed: this.suppression.list().length, audit: this.audit.verify() };
   }
 }
 

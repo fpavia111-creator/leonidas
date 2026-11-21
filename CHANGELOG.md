@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+### Added
+- Several sending mailboxes: `sending.mailboxes` (each with its own password env var, daily cap and warmup start), `sending.totalDailyCap` and `sending.hourlyCap` (all mailboxes together). Mail goes from the least-used mailbox with room. A recipient always hears from the same mailbox. `leonidas status` shows each mailbox.
+- Each send and bounce records the mailbox it came from.
+- `leonidas mailboxes test` logs in to every sending mailbox and logs out, without sending anything.
+- `leonidas send --watch [seconds]` keeps running and sends as the limits allow. It prints only deliveries, failures and changes in what it is waiting for.
+- `import-harvey` carries over `channels.email.mailboxes` (the main mailbox first) and `max_hourly_sends`.
+- `leonidas import-harvey-contacts <csv>` imports a Harvey contacts export. Opt-outs and invalid addresses go to do-not-contact, and prospects Harvey already wrote to are left out.
+- The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
+
+### Changed
+- A send run stops checking messages one by one once a limit holds them all: the daily or hourly cap, the send window, quiet hours, `minIntervalSeconds` or the bounce pause. Only the first is written to the audit log, so a send loop doesn't fill the log.
+- A failed SMTP login, a connection problem or a host sending-limit reply (including cPanel's "exceeded the max emails per hour") no longer marks the message `failed` or records a bounce. The message moves to the next mailbox. The failing mailbox rests for an hour (login, limit) or 10 minutes (connection), across runs. Recipient replies such as a full mailbox or an unknown user still count as bounces.
+- Only one send runs at a time per state folder; a concurrent `send` or `leo_send_approved` reports `busy`. A message rejected or suppressed during a run is no longer sent.
+- Each message is checked against the current time, so the window, quiet hours and hourly cap hold during a long run.
+- A message that stays held for the same reason is written to the audit log once, not on every run.
+
 ## 0.2.0 (unreleased)
 ### Renamed: leadwright is now Leonidas of the Web
 - npm package `@kurtfrancisco/leonidas`, CLI `leonidas`, MCP server name `leonidas`, tools `leo_*`.

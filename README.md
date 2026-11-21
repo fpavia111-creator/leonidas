@@ -19,6 +19,7 @@ Autonomous SDR agents fail in the same ways: a fake "Re:" subject, a missing uns
 - **Subject lines under 30 characters.** This is a hard error. Config can tighten the limit but can't loosen it.
 - **Tuesday/Wednesday sending only.** This is a hard rule: `sending.allowedDays` can narrow it to one of those days but can't add others. It must be Tue/Wed both in the lead's `timezone` (falling back to `sending.timezone`) and in America/Chicago. Approved mail that comes up on another day is marked `scheduled` for the next Tuesday or Wednesday and goes out on the next `leonidas send` run on or after that date.
 - **Built-in SMTP** (zero dependencies) for cPanel and other hosted mailboxes: port 465 SSL or 587 STARTTLS, AUTH PLAIN/LOGIN, password from an environment variable only. A 550 on the recipient records a hard bounce and suppresses the address.
+- **Several sending mailboxes.** List them under `sending.mailboxes` and Leonidas spreads mail across them, each with its own daily cap and warmup. A recipient always hears from the same mailbox. A mailbox whose login fails or that hits the host's limit is skipped for that run, and its message stays queued.
 - **Verified-only sending** by default: leads must be marked `emailVerified: true` (or `verification: "valid"`).
 - **Deliverability.** Daily cap, per-domain cap, a warmup ramp (5/day, +3/day, or an explicit `sending.ramp`), a send window, a minimum gap between sends, quiet hours, a bounce-rate circuit breaker (pauses above 5% hard bounces), and SPF/DMARC/DKIM checks.
 - **Do-not-contact list.** Blocks exact emails (case and `+tag` normalized) and whole domains. Hard bounces and complaints are added automatically, and adding an entry pulls any pending mail to that address.
@@ -49,6 +50,7 @@ leonidas outbox pending_approval
 leonidas show <id>
 leonidas approve <id> "looks right"
 leonidas send          # only works with sending.mode="send"; only Tue/Wed
+leonidas send --watch 10   # keep running and send as the caps, window and minIntervalSeconds allow
 leonidas why owner@example.com
 ```
 
@@ -60,7 +62,10 @@ The config is found at `$LEONIDAS_CONFIG`, else `.leonidas/config.yaml`, `config
 | `sending.mode` | `"draft"` | Must be set to `"send"` explicitly before anything is delivered |
 | `sending.allowedDays` | `["Tue","Wed"]` | Weekdays when cold email may go out |
 | `sending.timezone` | `"America/Chicago"` | Used when a lead has no `timezone` |
-| `sending.dailyCap` / `perDomainDailyCap` | 30 / 3 | Hard caps per day |
+| `sending.dailyCap` / `perDomainDailyCap` | 30 / 3 | Hard caps per day. With `sending.mailboxes`, `dailyCap` is the cap for each mailbox |
+| `sending.mailboxes` | `[]` | Several sending mailboxes (see below). Empty means one mailbox: `sender.email` over `sending.smtp` |
+| `sending.totalDailyCap` | 0 | Cap per day across all mailboxes. 0 means the sum of the mailbox caps |
+| `sending.hourlyCap` | 0 | Sends per rolling hour across all mailboxes. 0 means no limit |
 | `sending.warmup` | 5/day +3/day | Ramp for a new mailbox |
 | `sending.maxBounceRate` | 0.05 | Hard-bounce rate that pauses sending (after 20 sends) |
 | `sending.transport` | `"file"` | `file` writes `.eml` files to `.leonidas/sent/`. `command` pipes the message to e.g. `msmtp -t`. `smtp` uses the built-in client (below) |
@@ -99,11 +104,35 @@ leonidas config check
 ```
 `secure` defaults to true on 465 and false (STARTTLS) on 587. The certificate is verified. If your host's certificate only covers its server name (e.g. `server123.hostingcompany.com`), use that name as `host`. `caFile` points at a custom CA, and `rejectUnauthorized: false` turns verification off (not recommended). Also set SPF, DKIM and DMARC for the domain (`leonidas dns yourdomain.com default`). Every gate still runs before a connection is opened: approval, Tue/Wed, subject and word limits, footer, ramp and caps, window, quiet hours, verified-only and the bounce breaker. A 5xx on `RCPT` marks the message `failed`, records a hard bounce and suppresses the address. A 4xx leaves it approved for the next run.
 
+### Several mailboxes
+Mailboxes on the same host share `sending.smtp` and only list what differs:
+```yaml
+sending:
+  transport: smtp
+  smtp:
+    host: mail.yourdomain.com
+    port: 465
+  dailyCap: 30          # per mailbox
+  hourlyCap: 400        # all mailboxes together; GoDaddy cPanel allows 500 an hour per account
+  mailboxes:
+    - email: you@yourdomain.com
+      passwordEnv: LEONIDAS_SMTP_PASSWORD_YOU
+    - email: sales@yourdomain.com
+      passwordEnv: LEONIDAS_SMTP_PASSWORD_SALES
+      dailyCap: 10                  # its own cap
+      warmupStartDate: "2026-11-24" # a new mailbox warms up from its own start date
+```
+An entry can be just the address (`- you@yourdomain.com`), or a map with `email` (the From address and login) and optionally `user` (a different login), `name` (display name, default `sender.name`), `passwordEnv` (default `sending.smtp.passwordEnv`), `host`, `port`, `secure`, `dailyCap` and `warmupStartDate`. Every gate applies to every mailbox. The send window, quiet hours, `minIntervalSeconds`, the per-domain cap and the bounce breaker count all mailboxes together.
+
+Leonidas sends each message from the least-used mailbox that has room today. Mail to someone who was already written to goes out from the same mailbox, so the thread stays in one inbox. If that mailbox is at its cap, the message waits. A mailbox with a missing password or an invalid address is skipped. When a mailbox fails while sending, its message moves to the next mailbox and nothing is recorded as a bounce. The mailbox then rests: for an hour after a failed login or a host sending limit (such as cPanel's "exceeded the max emails per hour"), and for 10 minutes after a connection problem. Rests last across runs, so a wrong password isn't tried again every few seconds. A successful `leonidas mailboxes test` ends a rest early. Only one `leonidas send` runs at a time per state folder; a second one reports `busy`. `leonidas status` lists each mailbox with its sends today, its cap, its hard bounces and any problems. `leonidas mailboxes test` logs in to every mailbox over SMTP and logs out without sending anything, so you can check passwords on any day of the week.
+
 ### YAML configs, Harvey import and validation
 ```bash
 leonidas import-harvey harvey.yaml .leonidas/config.yaml   # convert a Harvey-style config (persona/product/offer/icp/channels/usage/brain)
 leonidas config check [file]                               # schema and safety check; exit code 1 on errors
 ```
+`leonidas import-harvey-contacts contacts.csv` adds the prospects from a Harvey contacts export (`harvey export --all`). Opt-outs and invalid addresses go to the do-not-contact list, and prospects Harvey already emailed, or who replied or booked, are left out. Harvey's `email_status: verified` counts as verified.
+
 `import-harvey` maps snake_case Harvey fields onto this schema and prints a note for each change. For example, `meeting_duration: 10 minutes` becomes `meetingDurationMinutes: 10`, `company_size: 1-20 employees` becomes `"1-20"`, and `provider: smtp` becomes `transport: smtp`. Duplicate YAML keys are reported (the last value wins). Imported configs always start in `draft` mode. `config check` warns about risky values: send days other than Tue/Wed, `sendUnverified: true`, approval turned off, plaintext SMTP. See [`examples/local-web-agency.yaml`](examples/local-web-agency.yaml) for a full example with placeholders.
 
 ## Pro ($11 launch price)

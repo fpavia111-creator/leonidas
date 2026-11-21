@@ -25,17 +25,45 @@ function resolveSmtp(cfg) {
   return s;
 }
 
-/** Config problems that block SMTP delivery. */
-function smtpProblems(cfg, env = process.env) {
-  const s = resolveSmtp(cfg), p = [];
-  const raw = (cfg.sending && cfg.sending.smtp) || {};
-  if ('password' in raw || 'pass' in raw) p.push('sending.smtp.password must not be in the config file; put it in the env var named by sending.smtp.passwordEnv');
-  if (!s.host) p.push('sending.smtp.host is not set');
-  if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) p.push('sending.smtp.port must be 465 (SSL) or 587 (STARTTLS)');
-  if (!s.user) p.push('sending.smtp.user is not set');
-  if (!/^[A-Z_][A-Z0-9_]*$/.test(s.passwordEnv)) p.push('sending.smtp.passwordEnv must be an environment variable name');
+/** Problems with one mailbox's SMTP settings (`raw` as written in config; `label` names it in messages). */
+function smtpConfigProblems(raw, label, env = process.env) {
+  const s = resolveSmtp({ sending: { smtp: raw } }), p = [];
+  if ('password' in raw || 'pass' in raw) p.push(`${label}.password must not be in the config file; put it in the env var named by ${label}.passwordEnv`);
+  if (!s.host) p.push(`${label}.host is not set`);
+  if (!Number.isInteger(s.port) || s.port < 1 || s.port > 65535) p.push(`${label}.port must be 465 (SSL) or 587 (STARTTLS)`);
+  if (!s.user) p.push(`${label}.user is not set`);
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(s.passwordEnv)) p.push(`${label}.passwordEnv must be an environment variable name`);
   else if (!env[s.passwordEnv]) p.push(`environment variable ${s.passwordEnv} (SMTP password) is not set`);
   return p;
+}
+
+/** Config problems that block SMTP delivery (the single sending.smtp mailbox). */
+function smtpProblems(cfg, env = process.env) {
+  return smtpConfigProblems((cfg.sending && cfg.sending.smtp) || {}, 'sending.smtp', env);
+}
+
+const EMAIL = /^[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+$/;
+
+/**
+ * Problems per pooled mailbox: Map of mailbox email -> [problems]; only mailboxes with problems
+ * appear. Every transport needs a valid From address; smtp also needs server settings and a password.
+ */
+function mailboxProblems(cfg, env = process.env) {
+  const { mailboxes } = require('./deliverability');
+  const out = new Map();
+  const list = Array.isArray(cfg.sending.mailboxes) ? cfg.sending.mailboxes : [];
+  const pool = mailboxes(cfg);
+  list.forEach((raw, i) => {
+    const mb = pool[i], at = `sending.mailboxes[${i}]`;
+    const p = [];
+    if (typeof raw !== 'string' && (!raw || typeof raw !== 'object' || Array.isArray(raw))) p.push(`${at} must be an email address or a map with "email"`);
+    else if (typeof raw === 'object' && ('password' in raw || 'pass' in raw)) p.push(`${at}.password must not be in the config file; use passwordEnv`);
+    if (!EMAIL.test(mb.email)) p.push(`${at}.email "${mb.email}" is not an email address`);
+    if (/[\r\n"<>]/.test(mb.name || '')) p.push(`${at}.name must not contain quotes, angle brackets or line breaks`);
+    if (cfg.sending.transport === 'smtp') p.push(...smtpConfigProblems(mb.smtp, `${at} (${mb.email})`, env));
+    if (p.length) out.set(mb.email, [...(out.get(mb.email) || []), ...p]);
+  });
+  return out;
 }
 
 /** Line reader + command/response over a socket that can be upgraded to TLS. */
@@ -57,7 +85,8 @@ function session(sock, timeoutMs) {
   const attach = s => {
     s.setEncoding('utf8');
     s.on('data', d => { buf += d; pump(); });
-    s.on('error', e => { closedErr = e; if (waiter) { const w = waiter; waiter = null; clearTimeout(w.t); w.reject(e); } });
+    // A socket error is a connection problem whatever command was pending, so it is reported as stage "io".
+    s.on('error', e => { closedErr = e; if (waiter) { const w = waiter; waiter = null; clearTimeout(w.t); w.reject(new SmtpError(`${w.stage}: ${e.message}`, { stage: 'io' })); } });
     s.on('close', () => { if (!closedErr) closedErr = new Error('connection closed'); if (waiter) { const w = waiter; waiter = null; clearTimeout(w.t); w.reject(new SmtpError('connection closed by server', { stage: 'io' })); } });
   };
   attach(sock);
@@ -65,8 +94,9 @@ function session(sock, timeoutMs) {
     sock,
     read(stage) {
       return new Promise((resolve, reject) => {
-        if (closedErr && !lines.length) return reject(new SmtpError(`${stage}: ${closedErr.message}`, { stage }));
-        waiter = { resolve, reject, t: setTimeout(() => { waiter = null; reject(new SmtpError(`${stage}: timeout after ${timeoutMs}ms`, { stage })); sock.destroy(); }, timeoutMs) };
+        // A closed connection or a timeout is not a server reply about the recipient: report it as stage "io".
+        if (closedErr && !lines.length) return reject(new SmtpError(`${stage}: ${closedErr.message}`, { stage: 'io' }));
+        waiter = { resolve, reject, stage, t: setTimeout(() => { waiter = null; reject(new SmtpError(`${stage}: timeout after ${timeoutMs}ms`, { stage: 'io' })); sock.destroy(); }, timeoutMs) };
         pump();
       });
     },
@@ -80,7 +110,7 @@ function session(sock, timeoutMs) {
       return new Promise((resolve, reject) => {
         sock.removeAllListeners('data'); sock.removeAllListeners('close'); sock.removeAllListeners('error');
         const t = tls.connect({ socket: sock, ...tlsOpts }, () => { api.sock = t; resolve(); });
-        t.once('error', reject);
+        t.once('error', e => reject(new SmtpError(`STARTTLS: ${e.message}`, { stage: 'STARTTLS' })));
         buf = ''; closedErr = null; attach(t);
       });
     },
@@ -109,11 +139,31 @@ const extList = r => r.lines.slice(1).map(l => l.toUpperCase());
  * Throws SmtpError (err.permanent true for 5xx).
  */
 async function sendMail(smtpCfg, eml, envelope, { env = process.env } = {}) {
+  if (/[\r\n<>]/.test(envelope.from + envelope.to)) throw new SmtpError('invalid envelope address', { stage: 'config' });
+  return withLogin(smtpCfg, env, async (c, encrypted) => {
+    await c.cmd(`MAIL FROM:<${envelope.from}>`, [250], 'MAIL FROM');
+    await c.cmd(`RCPT TO:<${envelope.to}>`, [250, 251], 'RCPT TO');
+    await c.cmd('DATA', [354], 'DATA');
+    const r = await c.cmd(dataPayload(eml), [250], 'DATA end');
+    try { await c.cmd('QUIT', [221], 'QUIT'); } catch { /* ignore */ }
+    return { code: r.code, response: r.text, encrypted };
+  });
+}
+
+/** Log in and log out without sending anything. Resolves {ok: true, encrypted}; throws SmtpError. */
+async function verifyLogin(smtpCfg, { env = process.env } = {}) {
+  return withLogin(smtpCfg, env, async (c, encrypted) => {
+    try { await c.cmd('QUIT', [221], 'QUIT'); } catch { /* ignore */ }
+    return { ok: true, encrypted };
+  });
+}
+
+/** Connect, secure the connection, authenticate, then run fn(session, encrypted). */
+async function withLogin(smtpCfg, env, fn) {
   const s = { ...SMTP_DEFAULTS, ...smtpCfg };
   s.port = Number(s.port); if (s.secure === null || s.secure === undefined || s.secure === '') s.secure = s.port === 465;
   const pass = env[s.passwordEnv];
   if (!pass) throw new SmtpError(`environment variable ${s.passwordEnv} is not set`, { stage: 'config' });
-  if (/[\r\n<>]/.test(envelope.from + envelope.to)) throw new SmtpError('invalid envelope address', { stage: 'config' });
   const tlsOpts = { servername: net.isIP(s.host) ? undefined : s.host, rejectUnauthorized: s.rejectUnauthorized !== false, minVersion: 'TLSv1.2' };
   if (s.caFile) tlsOpts.ca = fs.readFileSync(s.caFile);
   const sock = await connect(s, tlsOpts);
@@ -140,13 +190,32 @@ async function sendMail(smtpCfg, eml, envelope, { env = process.env } = {}) {
       await c.cmd(Buffer.from(s.user).toString('base64'), [334], 'AUTH');
       await c.cmd(Buffer.from(pass).toString('base64'), [235], 'AUTH');
     }
-    await c.cmd(`MAIL FROM:<${envelope.from}>`, [250], 'MAIL FROM');
-    await c.cmd(`RCPT TO:<${envelope.to}>`, [250, 251], 'RCPT TO');
-    await c.cmd('DATA', [354], 'DATA');
-    const r = await c.cmd(dataPayload(eml), [250], 'DATA end');
-    try { await c.cmd('QUIT', [221], 'QUIT'); } catch { /* ignore */ }
-    return { code: r.code, response: r.text, encrypted };
+    return await fn(c, encrypted);
   } finally { c.sock.destroy(); }
 }
 
-module.exports = { SMTP_DEFAULTS, SmtpError, resolveSmtp, smtpProblems, sendMail, dataPayload };
+const SENDER_STAGES = ['config', 'connect', 'greeting', 'EHLO', 'STARTTLS', 'AUTH', 'MAIL FROM', 'io'];
+// Replies that mean the sending account hit its host's limit, e.g. cPanel/Exim:
+// "550 Domain x has exceeded the max emails per hour (500/500 (100%)) allowed."
+const ACCOUNT_LIMIT = /sending limit|relay limit|exceeded the max(imum)? (number of )?(emails|messages|recipients|defers)|max(imum)? (emails|messages|defers)( and failures)? per (hour|day)|outgoing (mail|message)s? (limit|quota)/i;
+
+/**
+ * Did this failure come from the sending mailbox or account rather than the recipient?
+ * Everything before RCPT (connection, TLS, login, MAIL FROM) and errors without a stage are.
+ * At RCPT/DATA only an account-limit reply is; recipient replies (5.1.x/5.2.x, a full mailbox,
+ * the recipient's own rate limits) are not, and keep the bounce/retry path. Addresses echoed in
+ * the reply are ignored so a recipient called ratelimit@ can't look like a limit.
+ */
+function isMailboxFault(stage, message) {
+  if (!stage || SENDER_STAGES.includes(stage)) return true;
+  const text = String(message || '').replace(/<[^>]*>/g, ' ').replace(/[^\s@]+@[^\s@]+/g, ' ');
+  if (/\b5\.[12]\.\d{1,3}\b/.test(text)) return false;
+  return ACCOUNT_LIMIT.test(text);
+}
+
+/** How long a mailbox rests after a fault: a login or limit problem for an hour, a connection problem for 10 minutes. */
+function restMinutes(stage, message) {
+  return stage === 'AUTH' || stage === 'MAIL FROM' || ACCOUNT_LIMIT.test(String(message || '')) ? 60 : 10;
+}
+
+module.exports = { SMTP_DEFAULTS, SmtpError, resolveSmtp, smtpConfigProblems, smtpProblems, mailboxProblems, isMailboxFault, restMinutes, sendMail, verifyLogin, dataPayload };
