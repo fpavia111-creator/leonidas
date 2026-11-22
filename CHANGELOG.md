@@ -13,6 +13,9 @@
 - `leonidas import-harvey-contacts <csv>` imports a Harvey contacts export. Opt-outs and invalid addresses go to do-not-contact, and prospects Harvey already wrote to are left out.
 - The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
 
+### Fixed
+- Outgoing mail now has `Date`, `Message-ID` (on the sending mailbox's domain), `MIME-Version` and `Content-Transfer-Encoding` headers. Spam filters score mail without a Date header as spam. A non-ASCII subject or display name is sent as an RFC 2047 encoded word.
+
 ### Changed
 - A send run stops checking messages one by one once a limit holds them all: the daily or hourly cap, the send window, quiet hours, `minIntervalSeconds` or the bounce pause. Only the first is written to the audit log, so a send loop doesn't fill the log.
 - A failed SMTP login, a connection problem or a host sending-limit reply (including cPanel's "exceeded the max emails per hour") no longer marks the message `failed` or records a bounce. The message moves to the next mailbox. The failing mailbox rests for an hour (login, limit) or 10 minutes (connection), across runs. Recipient replies such as a full mailbox or an unknown user still count as bounces.
