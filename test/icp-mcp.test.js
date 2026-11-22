@@ -31,12 +31,58 @@ describe('ICP templates', () => {
   });
   it('unknown template throws', () => assert.throws(() => resolveIcp({ template: 'nope' })));
   it('config overrides template lists', () => assert.deepEqual(resolveIcp({ template: 'saas', titles: ['CTO'] }).titles, ['CTO']));
+  it('config signals replace the template\'s; config disqualifiers add to them', () => {
+    const icp = resolveIcp({ template: 'home_services', signals: ['no website'], disqualifiers: ['hemp'] });
+    assert.deepEqual(icp.signals, ['no website']);
+    assert.deepEqual(icp.disqualifiers, ['franchise HQ', 'hemp']);
+    assert.equal(scoreLead({ ...LEAD, company: 'Upstate Hemp Co' }, icp).disqualified, 'hemp');
+  });
+  it('requireGeography disqualifies leads elsewhere and holds back leads with no location', () => {
+    const icp = resolveIcp({ template: 'home_services', geography: ['San Antonio', 'New Braunfels'], requireGeography: true });
+    const sa = scoreLead({ ...LEAD, location: 'San Antonio, TX' }, icp);
+    assert.ok(sa.qualified);
+    const ny = scoreLead({ ...LEAD, location: 'Brooklyn, NY' }, icp);
+    assert.equal(ny.qualified, false); assert.match(ny.disqualified, /outside San Antonio/);
+    const tx = scoreLead({ ...LEAD, location: 'Texas' }, icp);
+    assert.ok(tx.disqualified, 'a state alone does not match a city');
+    const none = scoreLead({ ...LEAD }, icp);
+    assert.equal(none.qualified, false); assert.equal(none.disqualified, null);
+    assert.ok(none.reasons.includes('location unknown (icp.requireGeography)'));
+  });
+});
+
+describe('ICP gate on cold mail', () => {
+  const icpOver = extra => ({ icp: { template: 'home_services', geography: ['San Antonio'], requireGeography: true, ...extra } });
+  it('blocks a disqualified lead', () => {
+    const inst = lw({ over: icpOver() });
+    const { added: [lead] } = inst.addLeads([{ ...LEAD, location: 'Albany, NY' }]);
+    const m = inst.queueEmail({ leadId: lead.id, ...GOOD, why: 'test' });
+    assert.equal(m.status, 'blocked'); assert.match(m.gate.errors.join(), /disqualified: location "Albany, NY" is outside San Antonio/);
+  });
+  it('warns on an unqualified lead, and blocks it with blockUnqualified', () => {
+    const warn = lw({ over: icpOver() });
+    const { added: [a] } = warn.addLeads([{ ...LEAD }]);
+    const m1 = warn.queueEmail({ leadId: a.id, ...GOOD, why: 'test' });
+    assert.equal(m1.status, 'pending_approval'); assert.match(m1.gate.warnings.join(), /not qualified .*location unknown/);
+    const block = lw({ over: icpOver({ blockUnqualified: true }) });
+    const { added: [b] } = block.addLeads([{ ...LEAD }]);
+    const m2 = block.queueEmail({ leadId: b.id, ...GOOD, why: 'test' });
+    assert.equal(m2.status, 'blocked'); assert.match(m2.gate.errors.join(), /icp\.blockUnqualified/);
+  });
 });
 
 describe('writer prompt', () => {
   it('states the 30-char subject rule and footer handling', () => {
     const p = writerPrompt({ lead: LEAD, icp: { id: 'x' }, sender: { name: 'Kurt' } });
     assert.match(p, /under 30 characters/); assert.match(p, /footer/);
+  });
+  it('cold mail: greet by first name, say why you are writing, make a concrete offer', () => {
+    const p = writerPrompt({ lead: { ...LEAD, name: 'Dana Ruiz' }, icp: { id: 'x' }, sender: { name: 'Kurt' } });
+    assert.match(p, /Greet Dana by first name; never "Hi there"/);
+    assert.match(p, /why you are writing to THIS business/);
+    assert.match(p, /one concrete offer/);
+    assert.match(writerPrompt({ lead: { ...LEAD, name: '' }, icp: { id: 'x' }, sender: {} }), /Greet the business by name/);
+    assert.doesNotMatch(writerPrompt({ lead: LEAD, icp: { id: 'x' }, sender: {}, kind: 'followup' }), /Greet/);
   });
 });
 

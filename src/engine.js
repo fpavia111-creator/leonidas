@@ -82,7 +82,17 @@ class Leadwright {
     if (!why || !String(why).trim()) throw new Error('queue_email requires "why": the reason this lead is being contacted');
     const fullBody = String(body || '').trim() + renderFooter(this.cfg);
     const gate = checkEmail({ to: lead.email, subject, body: fullBody }, { cfg: this.cfg, suppression: this.suppression, kind, footerAppended: false });
-    if (kind === 'cold' && !lead.qualified) gate.warnings.push(`lead score ${lead.score} below ICP minimum ${this.icp().minScore}`);
+    if (kind === 'cold') {
+      // Score against the ICP as configured now, so a tightened ICP also covers leads added earlier.
+      const icp = this.icp();
+      const sc = scoreLead(lead, icp);
+      if (sc.disqualified) { gate.errors.push(`lead is disqualified: ${sc.disqualified}`); gate.ok = false; }
+      else if (!sc.qualified) {
+        const why = `lead is not qualified (score ${sc.score}, ICP minimum ${icp.minScore}${sc.reasons.some(r => r.startsWith('location unknown')) ? ', location unknown' : ''})`;
+        if (icp.blockUnqualified) { gate.errors.push(`${why}; icp.blockUnqualified sends cold mail only to qualified leads`); gate.ok = false; }
+        else gate.warnings.push(why);
+      }
+    }
     const msg = {
       id: newId('msg'), leadId: lead.id, to: lead.email, subject: String(subject || '').trim(), body: fullBody, kind,
       why, evidence, status: gate.ok ? 'pending_approval' : 'blocked', gate, createdAt: this.now().toISOString(),
