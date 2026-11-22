@@ -78,9 +78,26 @@ describe('caps, warmup, bounces', () => {
   it('dns check with fake resolver', async () => {
     const recs = { 'acme.test': [['v=spf1 include:_spf.google.com ~all']], '_dmarc.acme.test': [['v=DMARC1; p=none']] };
     const resolver = { resolveTxt: async n => { if (recs[n]) return recs[n]; throw new Error('ENOTFOUND'); } };
-    const ok = await d.checkDomainAuth('acme.test', { resolver });
+    const ok = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: null });
     assert.deepEqual(ok.problems, []);
-    const bad = await d.checkDomainAuth('none.test', { resolver, dkimSelector: 's1' });
+    const bad = await d.checkDomainAuth('none.test', { resolver, dkimSelector: 's1', fetchImpl: null });
     assert.equal(bad.problems.length, 3);
+  });
+  it('dns check flags a newly registered domain', async () => {
+    const resolver = { resolveTxt: async n => n === 'acme.test' ? [['v=spf1 ~all']] : [['v=DMARC1; p=none']] };
+    const rdap = registered => async url => {
+      if (url === 'https://data.iana.org/rdap/dns.json') return { ok: true, json: async () => ({ services: [[['test', 'example'], ['https://rdap.registry.test/v1/']]] }) };
+      assert.equal(url, 'https://rdap.registry.test/v1/domain/acme.test');
+      return { ok: true, json: async () => ({ events: [{ eventAction: 'registration', eventDate: registered }] }) };
+    };
+    const now = new Date('2026-11-22T00:00:00Z');
+    const young = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: rdap('2026-11-01T00:00:00Z'), now });
+    assert.equal(young.ageDays, 21);
+    assert.match(young.problems.join(), /registered 21 days ago/);
+    const old = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: rdap('2020-01-01T00:00:00Z'), now });
+    assert.deepEqual(old.problems, []);
+    const down = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: async () => { throw new Error('offline'); }, now });
+    assert.equal(down.registered, null);
+    assert.deepEqual(down.problems, []);
   });
 });

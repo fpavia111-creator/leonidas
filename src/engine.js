@@ -14,6 +14,7 @@ const { AuditLog } = require('./audit');
 const { checkEmail, renderFooter } = require('./compliance');
 const { canSend, classifyBounce, bounceStats, dayKey, poolCapacity, allowedDays, isQuietHours, mailboxes, mailboxCap, pickMailbox, rowMailbox } = require('./deliverability');
 const { resolveIcp, scoreLead } = require('./icp');
+const { junkReason } = require('./verify');
 
 /** RFC 5322 date in UTC, e.g. "Tue, 20 Oct 2026 15:00:00 +0000". */
 const rfcDate = d => d.toUTCString().replace(/GMT$/, '+0000');
@@ -53,6 +54,8 @@ class Leadwright {
     for (const raw of list) {
       const email = normalizeEmail(raw.email);
       if (!email) { skipped.push({ lead: raw, why: 'missing email' }); continue; }
+      const junk = junkReason(email);
+      if (junk) { skipped.push({ email, why: `invalid address: ${junk}` }); continue; }
       if (leads.some(l => l.email === email)) { skipped.push({ email, why: 'duplicate' }); continue; }
       const sup = this.suppression.match(email);
       if (sup) { skipped.push({ email, why: `do-not-contact (${sup.value})` }); continue; }
@@ -306,6 +309,33 @@ class Leadwright {
     }
     this.audit.record({ action: 'bounce', leadId: lead && lead.id, actor, reason: `${type} bounce`, data: { code, diagnostic } });
     return { type, suppressed: type !== 'soft' };
+  }
+
+  /**
+   * Check that each lead's domain can receive mail (MX, or A/AAAA as the implicit MX). A lead whose
+   * domain has no mail server is put on the do-not-contact list, which also pulls its pending mail;
+   * that address would only bounce. Leads checked before are skipped unless `all` is set.
+   * Returns { checked, ok, noMailServer: [emails], unknown: [emails] }.
+   */
+  async verifyLeadDomains({ all = false, resolver } = {}) {
+    const { mailDomainStatus } = require('./verify');
+    const leads = this.leads();
+    const byDomain = new Map();
+    const res = { checked: 0, ok: 0, noMailServer: [], unknown: [] };
+    const todo = leads.filter(l => all || !l.mailDomain);
+    for (const l of todo) {
+      const domain = l.email.split('@')[1];
+      if (!byDomain.has(domain)) byDomain.set(domain, await mailDomainStatus(domain, resolver ? { resolver } : {}));
+      l.mailDomain = byDomain.get(domain);
+      l.mailDomainCheckedAt = this.now().toISOString();
+      res.checked++;
+      if (l.mailDomain === 'ok') res.ok++;
+      else if (l.mailDomain === 'unknown') res.unknown.push(l.email);
+      else res.noMailServer.push(l.email);
+    }
+    this._saveLeads(leads);
+    for (const e of res.noMailServer) if (!this.suppression.match(e)) this.suppress(e, { reason: `domain ${e.split('@')[1]} has no mail server (no MX or A record)`, actor: 'system' });
+    return res;
   }
 
   suppress(value, { reason = 'manual', actor = 'human' } = {}) {
