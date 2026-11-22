@@ -139,6 +139,11 @@ describe('sorting incoming mail', () => {
     assert.equal(cat({ from: { email: 'noreply@stripe.test' }, own: 'Receipt' }), 'automated');
     assert.equal(cat({ from: { email: 'kurt@acme.test' } }, { ownAddresses: new Set(['kurt@acme.test']) }), 'own');
   });
+  it('booking systems, cPanel notices and our own domains are never answered', () => {
+    assert.equal(cat({ from: { email: 'bookings@bufo.test' }, own: 'New booking: Tuesday' }), 'automated');
+    assert.equal(cat({ from: { email: 'cpanel@g6.test' }, own: 'Client configuration settings' }), 'automated');
+    assert.equal(cat({ from: { email: 'leads@g6.test' }, own: 'New lead' }, { ownDomains: new Set(['g6.test']) }), 'own');
+  });
   it('a person writing is a reply candidate; info@ addresses count as people', () => {
     const c = classify(msg({ from: { email: 'info@smallshop.test' }, own: 'How much for a 5 page site?' }));
     assert.equal(c.category, 'needs_reply'); assert.equal(c.autoReplyEligible, true);

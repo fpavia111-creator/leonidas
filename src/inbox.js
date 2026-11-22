@@ -41,7 +41,7 @@ const SUSPICIOUS_RE = [
 
 const AUTO_SUBJECT_RE = /^(auto(matic)?[ -]?reply|out of (the )?office|ooo\b|away from|on vacation|respuesta autom|fuera de la oficina|abwesenheit)/i;
 const BOUNCE_SUBJECT_RE = /undeliver(able|ed)|delivery (status notification|failure|has failed)|mail delivery (failed|subsystem)|returned mail|failure notice|could not be delivered|message not delivered/i;
-const NOREPLY_RE = /^(no-?reply|do-?not-?reply|notifications?|mailer-daemon|postmaster|bounces?|alerts?|news(letter)?|marketing|billing|receipts?)[+@._-]/i;
+const NOREPLY_RE = /^(no-?reply|do-?not-?reply|notifications?|notify|mailer-daemon|postmaster|bounces?|alerts?|news(letter)?|marketing|billing|receipts?|bookings?|calendar|cpanel|wordpress|automated|system)[+@._-]/i;
 
 const flat = s => String(s || '').toLowerCase().replace(/[’‘]/g, "'").replace(/\s+/g, ' ');
 
@@ -92,10 +92,12 @@ function automatedReason(msg) {
  * Classify a parsed message. ctx: { ownAddresses: Set, isSuppressed(email) }
  * Returns { category, reasons[], bounce?, autoReplyEligible }.
  */
-function classify(msg, { ownAddresses = new Set(), isSuppressed = () => null } = {}) {
+function classify(msg, { ownAddresses = new Set(), ownDomains = new Set(), isSuppressed = () => null } = {}) {
   const from = msg.from.email;
   if (!from) return { category: 'automated', reasons: ['no sender address'], autoReplyEligible: false };
   if (ownAddresses.has(from)) return { category: 'own', reasons: ['sent from one of our own mailboxes'], autoReplyEligible: false };
+  const domain = from.split('@')[1] || '';
+  if (ownDomains.has(domain)) return { category: 'own', reasons: [`sent from our own domain ${domain} (site notifications, bookings, cPanel)`], autoReplyEligible: false };
   const b = bounceInfo(msg, ownAddresses);
   if (b) return { category: 'bounce', reasons: [`delivery failure${b.recipient ? ' for ' + b.recipient : ''}${b.code ? ' (' + b.code + ')' : ''}`], bounce: b, autoReplyEligible: false };
   if (AUTO_SUBJECT_RE.test(msg.subject) || /^(auto-replied|auto-generated)/i.test(String((msg.headers['auto-submitted'] || [''])[0]))) {
