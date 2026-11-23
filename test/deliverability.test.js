@@ -63,6 +63,16 @@ describe('caps, warmup, bounces', () => {
     const r = d.canSend(c, { sendLog: [{ day: '2026-10-20', status: 'sent', to: 'a@q.test' }], bounces: [], email: 'b@q.test', now });
     assert.match(r.reasons.join(), /per-domain/);
   });
+  it('personal mail providers get sending.perFreeMailDomainDailyCap when it is set', () => {
+    const log = Array.from({ length: 3 }, (_, i) => ({ day: '2026-10-20', status: 'sent', to: `p${i}@gmail.com` }));
+    assert.match(d.canSend(cfg({}), { sendLog: log, bounces: [], email: 'new@gmail.com', now }).reasons.join(), /per-domain cap reached for gmail\.com \(3\/3\)/);
+    const c = cfg({ sending: { perFreeMailDomainDailyCap: 100 } });
+    assert.doesNotMatch(d.canSend(c, { sendLog: log, bounces: [], email: 'new@gmail.com', now }).reasons.join(), /per-domain/);
+    const big = Array.from({ length: 100 }, (_, i) => ({ day: '2026-10-20', status: 'sent', to: `p${i}@gmail.com` }));
+    assert.match(d.canSend(c, { sendLog: big, bounces: [], email: 'new@gmail.com', now }).reasons.join(), /gmail\.com \(100\/100, sending\.perFreeMailDomainDailyCap\)/);
+    const co = Array.from({ length: 3 }, (_, i) => ({ day: '2026-10-20', status: 'sent', to: `p${i}@acme.test` }));
+    assert.match(d.canSend(c, { sendLog: co, bounces: [], email: 'new@acme.test', now }).reasons.join(), /per-domain cap reached for acme\.test \(3\/3\)/);
+  });
   it('bounce breaker', () => {
     const c = cfg({ sending: { minSendsForBounceRate: 10 } });
     const log = Array.from({ length: 10 }, (_, i) => ({ day: '2026-10-01', status: 'sent', to: `a${i}@q.test` }));

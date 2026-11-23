@@ -117,6 +117,9 @@ function weekdayIn(d, tz) {
   return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d);
 }
 
+/** Personal mailbox providers: one domain, many unrelated people (see sending.perFreeMailDomainDailyCap). */
+const FREE_MAIL = new Set(['gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com', 'hotmail.com', 'outlook.com', 'live.com', 'msn.com', 'icloud.com', 'me.com', 'mac.com', 'aol.com', 'att.net', 'sbcglobal.net', 'bellsouth.net', 'comcast.net', 'charter.net', 'proton.me', 'protonmail.com', 'swbell.net', 'verizon.net', 'cox.net']);
+
 /** Default send days for cold email. sending.allowedDays may list other weekdays; config check warns when it does. */
 const HARD_DAYS = ['Tue', 'Wed'];
 /** The day must be allowed in this timezone too (the sender's home zone), whatever the recipient's. */
@@ -182,7 +185,12 @@ function canSend(cfg, { sendLog, bounces, email, now = new Date(), recipientTz, 
   }
   const domain = String(email).toLowerCase().split('@')[1];
   const perDomain = today.filter(r => (r.to || '').toLowerCase().endsWith('@' + domain)).length;
-  if (perDomain >= cfg.sending.perDomainDailyCap) reasons.push(`per-domain cap reached for ${domain} (${perDomain}/${cfg.sending.perDomainDailyCap})`);
+  // The per-domain cap stops a run from hitting many people at one company. Personal mailbox providers
+  // (gmail.com, yahoo.com, ...) hold many unrelated people, so sending.perFreeMailDomainDailyCap can
+  // give them their own cap. Unset, they get the ordinary per-domain cap.
+  const free = FREE_MAIL.has(domain) && Number.isFinite(Number(cfg.sending.perFreeMailDomainDailyCap)) && cfg.sending.perFreeMailDomainDailyCap !== null && cfg.sending.perFreeMailDomainDailyCap !== '';
+  const domainCap = free ? Number(cfg.sending.perFreeMailDomainDailyCap) : cfg.sending.perDomainDailyCap;
+  if (perDomain >= domainCap) reasons.push(`per-domain cap reached for ${domain} (${perDomain}/${domainCap}${free ? ', sending.perFreeMailDomainDailyCap' : ''})`);
   const senderTz = cfg.sending.timezone || HARD_TZ;
   const w = cfg.sending.window || {};
   if (!sendAfter && !isReply && inWindow(now, senderTz, w.start, w.end) === false) global.push(`outside send window ${w.start}-${w.end} (${senderTz})`);

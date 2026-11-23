@@ -15,6 +15,7 @@
 - The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
 
 ### Fixed
+- `sending.perFreeMailDomainDailyCap` gives personal mail providers (gmail.com, yahoo.com, outlook.com, icloud.com and others) their own per-domain cap. The default per-domain cap of 3 is meant for one company, and it held a whole list of Gmail users to 3 a day.
 - The bounce breaker counts only bounces for addresses Leonidas sent to. Bounces imported from another tool or an old mailbox no longer pause sending before anything goes out.
 - With `approval.required: false`, a message that passes every gate is approved as it is queued, so unattended sending actually sends. Before, it sat in `pending_approval` forever. Gate failures are never auto-approved.
 - ICP targeting can be enforced: `icp.requireGeography` disqualifies leads outside `icp.geography` (one-way match, so "Texas" isn't "San Antonio"), `icp.blockUnqualified` blocks cold mail to unqualified leads, and a disqualified lead's cold mail is always blocked. Leads are re-scored at queue time, so a tightened ICP covers leads added earlier. `icp.signals` and `icp.geography` can replace the template's, and `icp.disqualifiers` add to them (matched against industry, company and notes).
