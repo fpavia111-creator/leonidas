@@ -66,8 +66,16 @@ describe('caps, warmup, bounces', () => {
   it('bounce breaker', () => {
     const c = cfg({ sending: { minSendsForBounceRate: 10 } });
     const log = Array.from({ length: 10 }, (_, i) => ({ day: '2026-10-01', status: 'sent', to: `a${i}@q.test` }));
-    const r = d.canSend(c, { sendLog: log, bounces: [{ type: 'hard' }], email: 'b@r.test', now });
+    const r = d.canSend(c, { sendLog: log, bounces: [{ type: 'hard', email: 'a3@q.test' }], email: 'b@r.test', now });
     assert.match(r.reasons.join(), /paused/);
+  });
+  it('bounce breaker ignores bounces for addresses Leonidas never sent to (imported history)', () => {
+    const c = cfg({ sending: { minSendsForBounceRate: 10 } });
+    const log = Array.from({ length: 10 }, (_, i) => ({ day: '2026-10-01', status: 'sent', to: `a${i}@q.test` }));
+    const old = Array.from({ length: 189 }, (_, i) => ({ type: 'hard', email: `old${i}@x.test` }));
+    assert.deepEqual(d.bounceStats(log, old), { sent: 10, hardBounces: 0, rate: 0 });
+    assert.doesNotMatch(d.canSend(c, { sendLog: log, bounces: old, email: 'b@r.test', now }).reasons.join(), /paused/);
+    assert.equal(d.bounceStats(log, [...old, { type: 'hard', email: 'A1@q.test' }]).hardBounces, 1);
   });
   it('classifyBounce', () => {
     assert.equal(d.classifyBounce('5.1.1', ''), 'hard');

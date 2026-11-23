@@ -145,10 +145,16 @@ function nextAllowedDay(cfg, now = new Date(), tz = cfg.sending.timezone) {
 
 function sendsOn(sendLog, day) { return sendLog.filter(r => r.day === day && r.status === 'sent'); }
 
+/**
+ * Hard-bounce rate of mail Leonidas itself sent. Bounces recorded for addresses it never sent to
+ * (imported from another tool, or found in an old mailbox) don't count: they say nothing about this
+ * sender's current list, and counting them would trip the breaker before anything went out.
+ */
 function bounceStats(sendLog, bounces) {
-  const sent = sendLog.filter(r => r.status === 'sent').length;
-  const hard = bounces.filter(b => b.type === 'hard').length;
-  return { sent, hardBounces: hard, rate: sent ? hard / sent : 0 };
+  const sentRows = sendLog.filter(r => r.status === 'sent');
+  const sentTo = new Set(sentRows.map(r => String(r.to || '').toLowerCase()));
+  const hard = bounces.filter(b => b.type === 'hard' && sentTo.has(String(b.email || '').toLowerCase())).length;
+  return { sent: sentRows.length, hardBounces: hard, rate: sentRows.length ? hard / sentRows.length : 0 };
 }
 
 /** Can one more message to `email` go out today? Returns {ok, reasons[], cap, used}. */

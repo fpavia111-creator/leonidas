@@ -15,6 +15,7 @@
 - The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
 
 ### Fixed
+- The bounce breaker counts only bounces for addresses Leonidas sent to. Bounces imported from another tool or an old mailbox no longer pause sending before anything goes out.
 - With `approval.required: false`, a message that passes every gate is approved as it is queued, so unattended sending actually sends. Before, it sat in `pending_approval` forever. Gate failures are never auto-approved.
 - ICP targeting can be enforced: `icp.requireGeography` disqualifies leads outside `icp.geography` (one-way match, so "Texas" isn't "San Antonio"), `icp.blockUnqualified` blocks cold mail to unqualified leads, and a disqualified lead's cold mail is always blocked. Leads are re-scored at queue time, so a tightened ICP covers leads added earlier. `icp.signals` and `icp.geography` can replace the template's, and `icp.disqualifiers` add to them (matched against industry, company and notes).
 - The writer prompt tells the model to greet by first name, say why it is writing to this business, and make one concrete offer.
