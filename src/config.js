@@ -30,7 +30,7 @@ const DEFAULTS = {
     maxBounceRate: 0.05,
     minSendsForBounceRate: 20,
     timezone: 'America/Chicago', // used when a lead has no timezone of its own
-    allowedDays: ['Tue', 'Wed'],  // cold email goes out ONLY on these weekdays (recipient tz)
+    allowedDays: ['Tue', 'Wed'],  // weekdays cold email may go out (recipient tz and America/Chicago)
   },
   approval: { required: true, allowAgentApproval: false },
   icp: { template: '', industries: [], titles: [], companySize: '', geography: [], minScore: 50 },

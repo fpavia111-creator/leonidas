@@ -17,7 +17,7 @@ Autonomous SDR agents fail in the same ways: a fake "Re:" subject, a missing uns
 - **CAN-SPAM gate.** Every message gets a footer with your physical postal address and an opt-out line. `List-Unsubscribe` headers are added (one-click when you set a URL). Deceptive `Re:`/`Fwd:` subjects on a first touch are blocked.
 - **Cold email bodies under 100 words** (footer excluded). Hard error at queue and send time. Config can tighten it but can't loosen it.
 - **Subject lines under 30 characters.** This is a hard error. Config can tighten the limit but can't loosen it.
-- **Tuesday/Wednesday sending only.** This is a hard rule: `sending.allowedDays` can narrow it to one of those days but can't add others. It must be Tue/Wed both in the lead's `timezone` (falling back to `sending.timezone`) and in America/Chicago. Approved mail that comes up on another day is marked `scheduled` for the next Tuesday or Wednesday and goes out on the next `leonidas send` run on or after that date.
+- **Tuesday/Wednesday sending by default.** `sending.allowedDays` can list other weekdays (`config check` warns when it does). The day must be allowed both in the lead's `timezone` (falling back to `sending.timezone`) and in America/Chicago. Approved mail that comes up on another day is marked `scheduled` for the next allowed day and goes out on the next `leonidas send` run on or after that date.
 - **Built-in SMTP** (zero dependencies) for cPanel and other hosted mailboxes: port 465 SSL or 587 STARTTLS, AUTH PLAIN/LOGIN, password from an environment variable only. A 550 on the recipient records a hard bounce and suppresses the address.
 - **Several sending mailboxes.** List them under `sending.mailboxes` and Leonidas spreads mail across them, each with its own daily cap and warmup. A recipient always hears from the same mailbox. A mailbox whose login fails or that hits the host's limit is skipped for that run, and its message stays queued.
 - **Verified-only sending** by default: leads must be marked `emailVerified: true` (or `verification: "valid"`).
@@ -49,7 +49,7 @@ Review and send:
 leonidas outbox pending_approval
 leonidas show <id>
 leonidas approve <id> "looks right"
-leonidas send          # only works with sending.mode="send"; only Tue/Wed
+leonidas send          # only works with sending.mode="send"; only on allowed days (Tue/Wed by default)
 leonidas send --watch 10   # keep running and send as the caps, window and minIntervalSeconds allow
 leonidas why owner@example.com
 ```
