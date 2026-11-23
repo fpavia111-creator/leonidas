@@ -325,6 +325,42 @@ class Leadwright {
   }
 
   /**
+   * Queue the follow-ups in `sequence.followups` ([{afterDays, body}]) for cold mail nobody answered.
+   * Step N goes to a lead whose step N-1 (step 0 = the first email) was sent at least afterDays ago,
+   * who hasn't replied, bounced or opted out, and who has no step N yet. It is threaded under the
+   * previous email ("Re:" its subject, In-Reply-To its Message-ID) and goes out from the same
+   * mailbox. `{first}`, `{name}` and `{company}` in the body are filled from the lead.
+   * Every gate applies as for any message. Returns { queued: [ids], skipped: n }.
+   */
+  queueFollowups({ actor = 'agent' } = {}) {
+    const steps = ((this.cfg.sequence && this.cfg.sequence.followups) || []).filter(s => s && s.body && Number(s.afterDays) > 0);
+    const res = { queued: [], skipped: 0 };
+    if (!steps.length) return res;
+    const now = this.now().getTime();
+    const ob = this.outbox();
+    const bounced = new Set(this.bounces().map(b => normalizeEmail(b.email)));
+    for (const lead of this.leads()) {
+      if (lead.repliedAt || bounced.has(lead.email) || this.suppression.match(lead.email)) continue;
+      const mine = ob.filter(m => m.leadId === lead.id && (m.kind === 'cold' || m.kind === 'followup'));
+      const first = mine.find(m => m.kind === 'cold' && m.status === 'sent');
+      if (!first) continue;
+      const done = mine.filter(m => m.kind === 'followup' && !['rejected', 'blocked'].includes(m.status));
+      const step = done.length;
+      if (step >= steps.length) continue;
+      const prev = step === 0 ? first : done[step - 1];
+      if (prev.status !== 'sent' || !prev.sentAt || now - Date.parse(prev.sentAt) < Number(steps[step].afterDays) * 86400000) { res.skipped++; continue; }
+      const firstName = String(lead.name || '').trim().split(/\s+/)[0] || lead.company || 'there';
+      const body = String(steps[step].body).replace(/\{first\}/g, firstName).replace(/\{name\}/g, lead.name || firstName).replace(/\{company\}/g, lead.company || '');
+      const id = x => `<${x.id}@${String(x.from || lead.email).split('@')[1]}>`;
+      const refs = [first, ...done].map(id);
+      const q = this.queueEmail({ leadId: lead.id, subject: /^re:/i.test(first.subject) ? first.subject : `Re: ${first.subject}`, body, why: `follow-up ${step + 1}: no reply ${steps[step].afterDays}+ days after the previous email (${first.why})`, kind: 'followup', actor });
+      this._update(q.id, x => { x.inReplyTo = id(prev); x.references = refs.join(' '); x.replyFrom = first.from; x.step = step + 1; });
+      res.queued.push(q.id);
+    }
+    return res;
+  }
+
+  /**
    * Check that each lead's domain can receive mail (MX, or A/AAAA as the implicit MX). A lead whose
    * domain has no mail server is put on the do-not-contact list, which also pulls its pending mail;
    * that address would only bounce. Leads checked before are skipped unless `all` is set.
