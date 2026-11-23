@@ -24,6 +24,7 @@ Usage: leonidas <command> [args]   ("leadwright" still works but is deprecated)
   reject <msgId> [reason]
   send                           deliver approved mail that passes every check
   send --watch [seconds]         keep running: try again every N seconds (default 10), sending as limits allow (Ctrl+C stops)
+  verify [--all]                 check every new lead's domain can receive mail; ones that can't go to do-not-contact
   suppress <email|domain> [why]  add to do-not-contact list
   unsuppress <email|domain>
   bounce <email> [code] [diag]   record a bounce (hard -> auto-suppress)
@@ -154,6 +155,7 @@ async function main(argv) {
     case 'approve': return out(lw.approve(a[0], { actor: 'human', note: a.slice(1).join(' ') }).status);
     case 'reject': return out(lw.reject(a[0], { actor: 'human', reason: a.slice(1).join(' ') || 'rejected' }).status);
     case 'send': return a[0] === '--watch' ? watchSend(a[1]) : out(lw.sendApproved({ actor: 'human' }));
+    case 'verify': return out(await lw.verifyLeadDomains({ all: a[0] === '--all' }));
     case 'suppress': return out(lw.suppress(a[0], { reason: a.slice(1).join(' ') || 'manual', actor: 'human' }));
     case 'unsuppress': { const n = lw.suppression.remove(a[0]); lw.audit.record({ action: 'unsuppressed', actor: 'human', reason: `removed ${a[0]}` }); return out(`removed ${n}`); }
     case 'bounce': return out(lw.recordBounce({ email: a[0], code: a[1], diagnostic: a.slice(2).join(' '), actor: 'human' }));

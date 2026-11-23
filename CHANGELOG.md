@@ -13,6 +13,15 @@
 - `leonidas import-harvey-contacts <csv>` imports a Harvey contacts export. Opt-outs and invalid addresses go to do-not-contact, and prospects Harvey already wrote to are left out.
 - The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
 
+### Fixed
+- ICP targeting can be enforced: `icp.requireGeography` disqualifies leads outside `icp.geography` (one-way match, so "Texas" isn't "San Antonio"), `icp.blockUnqualified` blocks cold mail to unqualified leads, and a disqualified lead's cold mail is always blocked. Leads are re-scored at queue time, so a tightened ICP covers leads added earlier. `icp.signals` and `icp.geography` can replace the template's, and `icp.disqualifiers` add to them (matched against industry, company and notes).
+- The writer prompt tells the model to greet by first name, say why it is writing to this business, and make one concrete offer.
+- `addLeads` (and every import) skips addresses a scraper picks up that are never a person: image and asset file names (`x@72x-copy.avif`), template placeholders (`john.doe@`, `nombre@correo.com`, `example@`), platform domains and malformed addresses. These made up part of 204 bounces in a real campaign.
+- `leonidas verify [--all]` checks that each lead's domain can receive mail (MX, or A/AAAA as the implicit MX). A domain with no mail server goes on the do-not-contact list and its pending mail is pulled. Dead domains caused about two thirds of the bounces in the same campaign.
+- `leonidas dns <domain>` reports the domain's registration date (RDAP via IANA's bootstrap) and flags a domain under 30 days old, which recipients' filters treat as a spam signal.
+- The content gate warns about a nameless cold-email greeting ("Hi there", "Dear Team").
+- Outgoing mail now has `Date`, `Message-ID` (on the sending mailbox's domain), `MIME-Version` and `Content-Transfer-Encoding` headers. Spam filters score mail without a Date header as spam. A non-ASCII subject or display name is sent as an RFC 2047 encoded word.
+
 ### Changed
 - A send run stops checking messages one by one once a limit holds them all: the daily or hourly cap, the send window, quiet hours, `minIntervalSeconds` or the bounce pause. Only the first is written to the audit log, so a send loop doesn't fill the log.
 - A failed SMTP login, a connection problem or a host sending-limit reply (including cPanel's "exceeded the max emails per hour") no longer marks the message `failed` or records a bounce. The message moves to the next mailbox. The failing mailbox rests for an hour (login, limit) or 10 minutes (connection), across runs. Recipient replies such as a full mailbox or an unknown user still count as bounces.

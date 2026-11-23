@@ -14,6 +14,16 @@ const { AuditLog } = require('./audit');
 const { checkEmail, renderFooter } = require('./compliance');
 const { canSend, classifyBounce, bounceStats, dayKey, poolCapacity, allowedDays, isQuietHours, mailboxes, mailboxCap, pickMailbox, rowMailbox } = require('./deliverability');
 const { resolveIcp, scoreLead } = require('./icp');
+const { junkReason } = require('./verify');
+
+/** RFC 5322 date in UTC, e.g. "Tue, 20 Oct 2026 15:00:00 +0000". */
+const rfcDate = d => d.toUTCString().replace(/GMT$/, '+0000');
+/** A header value as-is when it is plain ASCII, else as an RFC 2047 UTF-8 encoded word. Display names are quoted. */
+function encodeWord(s, displayName = false) {
+  s = String(s);
+  if (/^[\x20-\x7e]*$/.test(s)) return displayName ? `"${s}"` : s;
+  return `=?UTF-8?B?${Buffer.from(s, 'utf8').toString('base64')}?=`;
+}
 
 /** A lead counts as verified if a verifier marked it so (emailVerified true or verification "valid"/"verified"). */
 function isVerified(lead) {
@@ -44,6 +54,8 @@ class Leadwright {
     for (const raw of list) {
       const email = normalizeEmail(raw.email);
       if (!email) { skipped.push({ lead: raw, why: 'missing email' }); continue; }
+      const junk = junkReason(email);
+      if (junk) { skipped.push({ email, why: `invalid address: ${junk}` }); continue; }
       if (leads.some(l => l.email === email)) { skipped.push({ email, why: 'duplicate' }); continue; }
       const sup = this.suppression.match(email);
       if (sup) { skipped.push({ email, why: `do-not-contact (${sup.value})` }); continue; }
@@ -70,7 +82,17 @@ class Leadwright {
     if (!why || !String(why).trim()) throw new Error('queue_email requires "why": the reason this lead is being contacted');
     const fullBody = String(body || '').trim() + renderFooter(this.cfg);
     const gate = checkEmail({ to: lead.email, subject, body: fullBody }, { cfg: this.cfg, suppression: this.suppression, kind, footerAppended: false });
-    if (kind === 'cold' && !lead.qualified) gate.warnings.push(`lead score ${lead.score} below ICP minimum ${this.icp().minScore}`);
+    if (kind === 'cold') {
+      // Score against the ICP as configured now, so a tightened ICP also covers leads added earlier.
+      const icp = this.icp();
+      const sc = scoreLead(lead, icp);
+      if (sc.disqualified) { gate.errors.push(`lead is disqualified: ${sc.disqualified}`); gate.ok = false; }
+      else if (!sc.qualified) {
+        const why = `lead is not qualified (score ${sc.score}, ICP minimum ${icp.minScore}${sc.reasons.some(r => r.startsWith('location unknown')) ? ', location unknown' : ''})`;
+        if (icp.blockUnqualified) { gate.errors.push(`${why}; icp.blockUnqualified sends cold mail only to qualified leads`); gate.ok = false; }
+        else gate.warnings.push(why);
+      }
+    }
     const msg = {
       id: newId('msg'), leadId: lead.id, to: lead.email, subject: String(subject || '').trim(), body: fullBody, kind,
       why, evidence, status: gate.ok ? 'pending_approval' : 'blocked', gate, createdAt: this.now().toISOString(),
@@ -249,7 +271,10 @@ class Leadwright {
   _eml(m, mb = mailboxes(this.cfg)[0]) {
     const unsub = this.cfg.compliance.unsubscribe;
     const lu = [unsub.mailto && `<mailto:${unsub.mailto}?subject=unsubscribe>`, unsub.url && `<${unsub.url}>`].filter(Boolean).join(', ');
-    const headers = [`From: ${mb.name ? `"${mb.name}" ` : ''}<${mb.email}>`, `To: <${m.to}>`, `Subject: ${m.subject}`, lu && `List-Unsubscribe: ${lu}`, unsub.url && 'List-Unsubscribe-Post: List-Unsubscribe=One-Click', `X-Leadwright-Id: ${m.id}`, m.inReplyTo && `In-Reply-To: ${m.inReplyTo}`, m.references && `References: ${m.references}`, 'Content-Type: text/plain; charset=utf-8'].filter(Boolean);
+    // Date, Message-ID and MIME-Version are expected on every message (RFC 5322 / 2045). Mail without
+    // them scores as spam, and some relays add a Message-ID from the server's own hostname instead.
+    const domain = mb.email.split('@')[1];
+    const headers = [`Date: ${rfcDate(this.now())}`, `Message-ID: <${m.id}@${domain}>`, `From: ${mb.name ? `${encodeWord(mb.name, true)} ` : ''}<${mb.email}>`, `To: <${m.to}>`, `Subject: ${encodeWord(m.subject)}`, lu && `List-Unsubscribe: ${lu}`, unsub.url && 'List-Unsubscribe-Post: List-Unsubscribe=One-Click', `X-Leadwright-Id: ${m.id}`, m.inReplyTo && `In-Reply-To: ${m.inReplyTo}`, m.references && `References: ${m.references}`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8', 'Content-Transfer-Encoding: 8bit'].filter(Boolean);
     return headers.join('\r\n') + '\r\n\r\n' + m.body.replace(/\r?\n/g, '\r\n') + '\r\n';
   }
 
@@ -294,6 +319,33 @@ class Leadwright {
     }
     this.audit.record({ action: 'bounce', leadId: lead && lead.id, actor, reason: `${type} bounce`, data: { code, diagnostic } });
     return { type, suppressed: type !== 'soft' };
+  }
+
+  /**
+   * Check that each lead's domain can receive mail (MX, or A/AAAA as the implicit MX). A lead whose
+   * domain has no mail server is put on the do-not-contact list, which also pulls its pending mail;
+   * that address would only bounce. Leads checked before are skipped unless `all` is set.
+   * Returns { checked, ok, noMailServer: [emails], unknown: [emails] }.
+   */
+  async verifyLeadDomains({ all = false, resolver } = {}) {
+    const { mailDomainStatus } = require('./verify');
+    const leads = this.leads();
+    const byDomain = new Map();
+    const res = { checked: 0, ok: 0, noMailServer: [], unknown: [] };
+    const todo = leads.filter(l => all || !l.mailDomain);
+    for (const l of todo) {
+      const domain = l.email.split('@')[1];
+      if (!byDomain.has(domain)) byDomain.set(domain, await mailDomainStatus(domain, resolver ? { resolver } : {}));
+      l.mailDomain = byDomain.get(domain);
+      l.mailDomainCheckedAt = this.now().toISOString();
+      res.checked++;
+      if (l.mailDomain === 'ok') res.ok++;
+      else if (l.mailDomain === 'unknown') res.unknown.push(l.email);
+      else res.noMailServer.push(l.email);
+    }
+    this._saveLeads(leads);
+    for (const e of res.noMailServer) if (!this.suppression.match(e)) this.suppress(e, { reason: `domain ${e.split('@')[1]} has no mail server (no MX or A record)`, actor: 'system' });
+    return res;
   }
 
   suppress(value, { reason = 'manual', actor = 'human' } = {}) {

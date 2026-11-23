@@ -203,9 +203,38 @@ function classifyBounce(code = '', diagnostic = '') {
   return 'soft';
 }
 
-/** SPF / DMARC lookup (DKIM needs a selector). Never throws. */
-async function checkDomainAuth(domain, { resolver = dns, dkimSelector } = {}) {
-  const out = { domain, spf: null, dmarc: null, dkim: null, problems: [] };
+/**
+ * Registration date of a domain from its registry's RDAP server, or null. Never throws.
+ * The server comes from IANA's RDAP bootstrap file (data.iana.org/rdap/dns.json).
+ */
+async function rdapRegistered(domain, { fetchImpl = globalThis.fetch, timeoutMs = 8000 } = {}) {
+  if (!fetchImpl) return null;
+  try {
+    const get = async url => { const r = await fetchImpl(url, { signal: AbortSignal.timeout(timeoutMs), headers: { accept: 'application/rdap+json, application/json' } }); return r.ok ? r.json() : null; };
+    const boot = await get('https://data.iana.org/rdap/dns.json');
+    const tld = domain.toLowerCase().split('.').pop();
+    const svc = boot && (boot.services || []).find(([tlds]) => tlds.includes(tld));
+    if (!svc || !svc[1] || !svc[1][0]) return null;
+    const base = svc[1][0].replace(/\/?$/, '/');
+    const j = await get(`${base}domain/${encodeURIComponent(domain)}`);
+    if (!j) return null;
+    const ev = (j.events || []).find(e => e.eventAction === 'registration');
+    return ev && ev.eventDate ? ev.eventDate : null;
+  } catch { return null; }
+}
+
+/**
+ * SPF / DMARC lookup (DKIM needs a selector) and the domain's age. Never throws.
+ * fetchImpl: the fetch used for the RDAP age lookup (null skips it).
+ */
+async function checkDomainAuth(domain, { resolver = dns, dkimSelector, fetchImpl = globalThis.fetch, now = new Date() } = {}) {
+  const out = { domain, spf: null, dmarc: null, dkim: null, registered: null, ageDays: null, problems: [] };
+  // Filters treat a newly registered sending domain as a spam signal, and some gateways label it for the reader.
+  out.registered = await rdapRegistered(domain, { fetchImpl });
+  if (out.registered) {
+    out.ageDays = Math.floor((now.getTime() - Date.parse(out.registered)) / 86400000);
+    if (out.ageDays < 30) out.problems.push(`domain was registered ${out.ageDays} days ago: filters flag domains under 30 days old as likely spam, so keep cold volume very low until it is older`);
+  }
   const txt = async name => { try { return (await resolver.resolveTxt(name)).map(r => r.join('')); } catch { return []; } };
   const root = await txt(domain);
   out.spf = root.find(r => /^v=spf1/i.test(r)) || null;

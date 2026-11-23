@@ -85,6 +85,10 @@ The config is found at `$LEONIDAS_CONFIG`, else `.leonidas/config.yaml`, `config
 | `compliance.maxBodyWords` | 99 | Can only go lower. Bodies must be under 100 words, excluding the footer |
 | `compliance.maxSubjectLength` | 29 | Can only go lower. Subjects must be under 30 characters |
 | `icp.template` | `""` | One of the 8 templates (`leonidas templates`) |
+| `icp.industries`, `titles`, `geography`, `signals` | template's | Replace the template's lists |
+| `icp.disqualifiers` | `[]` | Added to the template's; matched against the lead's industry, company and notes. Cold mail to a disqualified lead is blocked |
+| `icp.requireGeography` | `false` | A lead whose location isn't in `icp.geography` is disqualified, and one with no location isn't qualified |
+| `icp.blockUnqualified` | `false` | Block cold mail to leads that aren't qualified, instead of only warning |
 
 ### SMTP for cPanel mailboxes
 In cPanel go to **Email Accounts > Connect Devices** and copy the "Secure SSL/TLS Settings" (outgoing server, usually `mail.yourdomain.com`).

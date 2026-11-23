@@ -118,6 +118,8 @@ function checkEmail({ to, subject, body }, opts) {
   if (!cfg.compliance.allowHtml && HTML_RE.test(body)) errors.push('HTML markup in body (plain text only)');
   if (/[A-Z]{6,}/.test(subject)) warnings.push('shouting (ALL CAPS) in subject');
   if ((subject.match(/!/g) || []).length > 0) warnings.push('exclamation mark in subject hurts deliverability');
+  // A nameless opener reads as a mass mailing; most "stop" replies in the Nov 2026 campaign answered one.
+  if (kind === 'cold' && /^\s*(hi|hello|hey|dear|greetings)\s+(there|team|sir|madam|sir\/madam|friend|owner|all|team of\b[^,\n]*)\s*[,.!:\n]/i.test(body)) warnings.push('generic greeting ("Hi there"): open with the person\'s first name, or with the business name if there is no person');
 
   // CAN-SPAM: physical postal address + working opt-out on every commercial message.
   if (kind !== 'reply') {

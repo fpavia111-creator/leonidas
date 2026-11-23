@@ -23,10 +23,15 @@ function resolveIcp(icpCfg = {}, dir = DIR) {
     industries: pick('industries') || [],
     titles: pick('titles') || [],
     companySize: icpCfg.companySize || (base && base.companySize) || '',
-    geography: icpCfg.geography || [],
-    signals: (base && base.signals) || [],
-    disqualifiers: (base && base.disqualifiers) || [],
+    geography: pick('geography') || [],
+    signals: pick('signals') || [],
+    // Config disqualifiers add to the template's; they never remove one.
+    disqualifiers: [...new Set([...((base && base.disqualifiers) || []), ...(icpCfg.disqualifiers || [])])],
     minScore: icpCfg.minScore != null ? icpCfg.minScore : (base ? base.minScore : 50),
+    // requireGeography: a lead outside icp.geography is disqualified, and one with no location isn't qualified.
+    requireGeography: icpCfg.requireGeography != null ? !!icpCfg.requireGeography : !!(base && base.requireGeography),
+    // blockUnqualified: cold mail to a lead that isn't qualified is blocked, not only warned about.
+    blockUnqualified: icpCfg.blockUnqualified != null ? !!icpCfg.blockUnqualified : !!(base && base.blockUnqualified),
   };
 }
 
@@ -53,17 +58,20 @@ function scoreLead(lead, icp) {
     if (n >= range[0] && n <= range[1]) { score += 15; reasons.push(`${n} employees within ${icp.companySize}`); }
     else reasons.push(`${n} employees outside ${icp.companySize}`);
   }
+  let geoMiss = null, geoUnknown = false;
   if (icp.geography.length && lead.location) {
-    const g = anyMatch(lead.location, icp.geography);
+    // Required geography matches one way only: "Texas" must not count as "San Antonio, TX".
+    const g = icp.requireGeography ? icp.geography.find(x => lc(lead.location).includes(lc(x))) : anyMatch(lead.location, icp.geography);
     if (g) { score += 10; reasons.push(`location "${lead.location}" in ${g}`); }
-  }
+    else if (icp.requireGeography) geoMiss = `location "${lead.location}" is outside ${icp.geography.slice(0, 3).join(', ')}${icp.geography.length > 3 ? ', …' : ''}`;
+  } else if (icp.geography.length && icp.requireGeography) { geoUnknown = true; reasons.push('location unknown (icp.requireGeography)'); }
   const sigs = (lead.signals || []).filter(Boolean);
   if (sigs.length) { const add = Math.min(20, sigs.length * 10); score += add; reasons.push(`signals: ${sigs.join('; ')}`); }
-  const dq = icp.disqualifiers.find(d => lc(lead.industry).includes(lc(d)) || lc(lead.notes).includes(lc(d)));
-  if (dq) { reasons.push(`disqualified: "${dq}"`); score = 0; }
+  const dq = geoMiss || icp.disqualifiers.find(d => [lead.industry, lead.company, lead.notes].some(v => lc(v).includes(lc(d))));
+  if (dq) { reasons.push(`disqualified: ${geoMiss ? dq : `"${dq}"`}`); score = 0; }
   if (!lead.email_verified && lead.email_status !== 'verified') reasons.push('email not verified');
   score = Math.min(100, score);
-  return { score, qualified: !dq && score >= icp.minScore, reasons, disqualified: dq || null };
+  return { score, qualified: !dq && !geoUnknown && score >= icp.minScore, reasons, disqualified: dq || null };
 }
 
 module.exports = { DIR, listTemplates, getTemplate, resolveIcp, scoreLead };

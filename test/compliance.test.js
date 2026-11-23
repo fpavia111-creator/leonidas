@@ -88,4 +88,13 @@ describe('CAN-SPAM + content gate', () => {
   it('header injection rejected', () => assert.equal(chk({ subject: 'hi\r\nBcc: x@y.test' }).ok, false));
   it('invalid recipient', () => assert.equal(checkEmail({ to: 'nope', subject: 'hi', body }, { cfg: c }).ok, false));
   it('warnings for ! in subject', () => assert.ok(chk({ subject: 'hello!' }).warnings.length));
+  it('warns on a nameless greeting in cold mail only', () => {
+    const w = b => checkEmail({ to: 'a@b.test', subject: 'hi', body: b + renderFooter(c) }, { cfg: c }).warnings.join();
+    assert.match(w('Hi there,\nQuick question about your site.'), /generic greeting/);
+    assert.match(w('Dear Team of Acme,\nQuick question.'), /generic greeting/);
+    assert.doesNotMatch(w('Dana, quick question about your site.'), /generic greeting/);
+    assert.doesNotMatch(w('Hi Dana,\nQuick question.'), /generic greeting/);
+    const reply = checkEmail({ to: 'a@b.test', subject: 'hi', body: 'Hi there, thanks.' + renderFooter(c) }, { cfg: c, kind: 'reply' }).warnings.join();
+    assert.doesNotMatch(reply, /generic greeting/);
+  });
 });
