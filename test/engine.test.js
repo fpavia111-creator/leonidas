@@ -39,6 +39,14 @@ describe('safe defaults', () => {
     const inst = lw(); queued(inst);
     assert.deepEqual(inst.sendApproved(), []);
   });
+  it('approval.required=false approves mail that passes the gate as it is queued, and it sends', () => {
+    const inst = lw({ over: { approval: { required: false } } });
+    const { msg } = queued(inst);
+    assert.equal(msg.status, 'approved'); assert.equal(msg.approvedBy, 'config (approval.required=false)');
+    assert.equal(inst.sendApproved()[0].status, 'sent');
+    const bad = queued(lw({ over: { approval: { required: false } } }), { subject: 'Re: hi' }).msg;
+    assert.equal(bad.status, 'blocked', 'gate failures are never auto-approved');
+  });
 });
 
 describe('pipeline', () => {

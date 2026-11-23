@@ -93,10 +93,13 @@ class Leadwright {
         else gate.warnings.push(why);
       }
     }
+    // With approval.required=false the operator chose unattended sending: a message that passes every
+    // gate is approved as it is queued. Every send-time check (caps, days, window, bounces) still applies.
+    const auto = gate.ok && !this.cfg.approval.required;
     const msg = {
       id: newId('msg'), leadId: lead.id, to: lead.email, subject: String(subject || '').trim(), body: fullBody, kind,
-      why, evidence, status: gate.ok ? 'pending_approval' : 'blocked', gate, createdAt: this.now().toISOString(),
-      approvedBy: null, approvedAt: null,
+      why, evidence, status: gate.ok ? (auto ? 'approved' : 'pending_approval') : 'blocked', gate, createdAt: this.now().toISOString(),
+      approvedBy: auto ? 'config (approval.required=false)' : null, approvedAt: auto ? this.now().toISOString() : null,
     };
     const ob = this.outbox(); ob.push(msg); this._saveOutbox(ob);
     this.audit.record({ action: gate.ok ? 'queued' : 'blocked', leadId: lead.id, messageId: msg.id, actor, reason: gate.ok ? why : `gate: ${gate.errors.join('; ')}`, evidence: [...evidence, ...lead.scoreReasons || []], data: { subject: msg.subject, warnings: gate.warnings, intendedWhy: why } });

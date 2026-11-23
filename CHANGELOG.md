@@ -14,6 +14,7 @@
 - The YAML reader accepts flow collections such as `[50, 100]` and `{address: a@b.c, port: 465}`.
 
 ### Fixed
+- With `approval.required: false`, a message that passes every gate is approved as it is queued, so unattended sending actually sends. Before, it sat in `pending_approval` forever. Gate failures are never auto-approved.
 - ICP targeting can be enforced: `icp.requireGeography` disqualifies leads outside `icp.geography` (one-way match, so "Texas" isn't "San Antonio"), `icp.blockUnqualified` blocks cold mail to unqualified leads, and a disqualified lead's cold mail is always blocked. Leads are re-scored at queue time, so a tightened ICP covers leads added earlier. `icp.signals` and `icp.geography` can replace the template's, and `icp.disqualifiers` add to them (matched against industry, company and notes).
 - The writer prompt tells the model to greet by first name, say why it is writing to this business, and make one concrete offer.
 - `addLeads` (and every import) skips addresses a scraper picks up that are never a person: image and asset file names (`x@72x-copy.avif`), template placeholders (`john.doe@`, `nombre@correo.com`, `example@`), platform domains and malformed addresses. These made up part of 204 bounces in a real campaign.
