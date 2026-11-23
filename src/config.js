@@ -158,7 +158,9 @@ function validateConfig(cfg) {
   }
   const days = (s.allowedDays || []).map(d => String(d).slice(0, 3).toLowerCase());
   const extra = days.filter(d => !['tue', 'wed'].includes(d));
-  if (extra.length) w.push(`sending.allowedDays includes ${extra.join(', ')}: cold email is only ever sent Tue/Wed, those days are ignored`);
+  if (extra.length) w.push(`sending.allowedDays includes ${extra.join(', ')}: cold email gets the most replies Tue/Wed, and other days add volume to the sending domain`);
+  const notDays = days.filter(d => !['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].includes(d));
+  if (notDays.length) w.push(`sending.allowedDays has ${notDays.join(', ')}, which aren't weekdays (Mon..Sun): they are ignored`);
   if (s.sendUnverified) w.push('sending.sendUnverified is true: mail to unverified addresses raises bounce/blacklist risk');
   if (!cfg.approval.required) w.push('approval.required is false: messages can be sent without human review');
   const o = cfg.offer || {};

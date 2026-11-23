@@ -146,12 +146,16 @@ describe('sending controls', () => {
     const c2 = cfg({ sending: { dailyCap: 8, ramp: [5, 10, 20], warmup: { enabled: true, startDate: '2026-10-20' } } });
     assert.equal(d.effectiveDailyCap(c2, '2026-10-21'), 8);
   });
-  it('allowedDays can narrow Tue/Wed but never widen', () => {
-    assert.deepEqual(d.allowedDays(cfg({ sending: { allowedDays: ['mon', 'tue', 'wed', 'thu'] } })), ['Tue', 'Wed']);
+  it('allowedDays defaults to Tue/Wed and can list any weekdays', () => {
+    assert.deepEqual(d.allowedDays(cfg({})), ['Tue', 'Wed']);
+    assert.deepEqual(d.allowedDays(cfg({ sending: { allowedDays: ['thu', 'mon', 'tue', 'wed'] } })), ['Mon', 'Tue', 'Wed', 'Thu']);
     assert.deepEqual(d.allowedDays(cfg({ sending: { allowedDays: ['Wed'] } })), ['Wed']);
-    assert.deepEqual(d.allowedDays(cfg({ sending: { allowedDays: ['Fri'] } })), ['Tue', 'Wed']);
+    assert.deepEqual(d.allowedDays(cfg({ sending: { allowedDays: ['nope'] } })), ['Tue', 'Wed']);
     const c = cfg({ sending: { allowedDays: ['Mon', 'Thu'] } });
-    assert.equal(d.isAllowedDay(c, new Date('2026-10-19T15:00:00Z'), 'America/Chicago'), false);
+    assert.equal(d.isAllowedDay(c, new Date('2026-10-19T15:00:00Z'), 'America/Chicago'), true); // Mon 10:00 CT
+    assert.equal(d.isAllowedDay(c, new Date('2026-10-20T15:00:00Z'), 'America/Chicago'), false); // Tue
+    const every = cfg({ sending: { allowedDays: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] } });
+    assert.equal(d.isAllowedDay(every, new Date('2026-10-17T15:00:00Z'), 'America/Chicago'), true); // Sat
   });
   it('send window in sender timezone', () => {
     const c = cfg({ sending: { window: { start: '09:00', end: '13:00' } } });

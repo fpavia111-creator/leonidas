@@ -117,15 +117,15 @@ function weekdayIn(d, tz) {
   return new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short' }).format(d);
 }
 
-/** Hard rule: cold email only ever goes out Tue/Wed. Config may narrow this, never widen it. */
+/** Default send days for cold email. sending.allowedDays may list other weekdays; config check warns when it does. */
 const HARD_DAYS = ['Tue', 'Wed'];
-/** ...and it must be Tue/Wed in this timezone too (the sender's home zone), whatever the recipient's. */
+/** The day must be allowed in this timezone too (the sender's home zone), whatever the recipient's. */
 const HARD_TZ = 'America/Chicago';
 
 function allowedDays(cfg) {
   const a = (cfg.sending.allowedDays && cfg.sending.allowedDays.length) ? cfg.sending.allowedDays : HARD_DAYS;
-  const norm = a.map(x => String(x).slice(0, 1).toUpperCase() + String(x).slice(1, 3).toLowerCase()).filter(x => HARD_DAYS.includes(x));
-  return norm.length ? [...new Set(norm)] : HARD_DAYS;
+  const norm = a.map(x => String(x).slice(0, 1).toUpperCase() + String(x).slice(1, 3).toLowerCase()).filter(x => WEEKDAYS.includes(x));
+  return norm.length ? WEEKDAYS.filter(x => norm.includes(x)) : HARD_DAYS;
 }
 
 /** Is `now` an allowed send day in timezone tz (and in America/Chicago)? */
