@@ -307,6 +307,75 @@ class Leadwright {
     return f;
   }
 
+  /**
+   * Tell the owner what needs them. `notify.email` gets:
+   *  - one email per run listing every new reply from a person (needs_reply, escalate, opt_out) not yet
+   *    reported, with what Leonidas did about it;
+   *  - once a day after `notify.dailyAt` (HH:MM, sending.timezone), a summary of the previous day.
+   * Sent from the first sending mailbox, outside the cold-mail gates (it goes to the owner). Returns
+   * { replies: n, summary: bool, sent: [subjects] }.
+   */
+  notifyOwner({ now = this.now() } = {}) {
+    const n = this.cfg.notify || {};
+    const res = { replies: 0, summary: false, sent: [] };
+    if (!n.email) return res;
+    const tz = this.cfg.sending.timezone || 'America/Chicago';
+    const mb = mailboxes(this.cfg)[0];
+    const send = (subject, body) => {
+      const id = newId('note');
+      this._deliver({ id, to: n.email, subject, body, kind: 'notice' }, mb);
+      this.audit.record({ action: 'notified', actor: 'system', reason: subject, data: { to: n.email } });
+      res.sent.push(subject);
+    };
+    // 1. New replies from people.
+    const people = ['needs_reply', 'escalate', 'opt_out', 'needs_human'];
+    const recs = this.inboxRecords().filter(r => people.includes(r.category) && !r.notifiedAt);
+    if (recs.length) {
+      const sentOut = this.outbox();
+      const line = r => {
+        const reply = r.replyId && sentOut.find(m => m.id === r.replyId);
+        const did = r.category === 'opt_out' ? 'Leonidas stopped emailing them.'
+          : reply && reply.status === 'sent' ? `Leonidas answered: "${String(reply.body).split('\n--')[0].replace(/\s+/g, ' ').slice(0, 300)}"`
+          : r.category === 'escalate' || r.status === 'needs_human' ? 'Needs you: Leonidas will not answer this one.'
+          : 'Waiting for an answer.';
+        return [`From: ${r.fromName ? r.fromName + ' ' : ''}<${r.from}>`, `To: ${r.replyFrom || r.account}`, `Subject: ${r.subject}`, '', String(r.text || '').replace(/\r/g, '').split(/\n(?:On .{5,80} wrote:|>)/)[0].trim().slice(0, 800), '', did].join('\n');
+      };
+      const hot = recs.filter(r => r.category !== 'opt_out').length;
+      send(`Leonidas: ${hot ? `${hot} new repl${hot === 1 ? 'y' : 'ies'}` : `${recs.length} opt-out${recs.length === 1 ? '' : 's'}`}`, recs.map(line).join('\n\n----------\n\n'));
+      const at = now.toISOString();
+      this.store.writeJson('inbox.json', this.inboxRecords().map(r => recs.some(x => x.id === r.id) ? { ...r, notifiedAt: at } : r));
+      res.replies = recs.length;
+    }
+    // 2. Daily summary of yesterday, once, after notify.dailyAt.
+    if (n.dailyAt && /^\d\d:\d\d$/.test(n.dailyAt)) {
+      const st = this.store.readJson('notify-state.json', {});
+      const today = dayKey(now, tz);
+      const hm = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(now);
+      if (st.summaryFor !== today && hm >= n.dailyAt) {
+        const y = dayKey(new Date(now.getTime() - 86400000), tz);
+        const sends = this.sendLog().filter(r => r.status === 'sent' && r.day === y);
+        const inbox = this.inboxRecords().filter(r => r.receivedAt && dayKey(new Date(r.receivedAt), tz) === y);
+        const count = c => inbox.filter(r => r.category === c).length;
+        const waiting = this.outbox().filter(m => ['approved', 'scheduled', 'pending_approval'].includes(m.status)).length;
+        const b = bounceStats(this.sendLog(), this.bounces());
+        const body = [
+          `Leonidas, ${y}:`, '',
+          `Sent: ${sends.length}`,
+          `Replies from people: ${count('needs_reply') + count('escalate')}`,
+          `Opt-outs: ${count('opt_out')}`,
+          `Bounces: ${count('bounce')}`,
+          `Out-of-office replies: ${count('auto_reply')}`, '',
+          `All time: ${b.sent} sent, ${b.hardBounces} hard bounces (${(b.rate * 100).toFixed(1)}%).`,
+          `Waiting to send: ${waiting}. Today's limit: ${poolCapacity(this.cfg, today)}.`,
+        ].join('\n');
+        send(`Leonidas daily: ${sends.length} sent, ${count('needs_reply') + count('escalate')} replies`, body);
+        this.store.writeJson('notify-state.json', { ...st, summaryFor: today });
+        res.summary = true;
+      }
+    }
+    return res;
+  }
+
   recordBounce({ email, code = '', diagnostic = '', actor = 'system', mailbox }) {
     const type = classifyBounce(code, diagnostic);
     const e = normalizeEmail(email);

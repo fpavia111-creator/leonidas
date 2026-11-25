@@ -47,6 +47,8 @@ const DEFAULTS = {
   // autoReplyTo: "people" = anyone who wrote personally; "leads" = only people Leonidas contacted.
   // Follow-ups for cold mail nobody answered: [{ afterDays: 7, body: 'Hi {first}, ...' }] (leonidas followups).
   sequence: { followups: [] },
+  // Owner notifications (leonidas notify): new replies, and a daily summary after dailyAt (HH:MM).
+  notify: { email: '', dailyAt: '' },
   inbox: { accounts: [], lookbackDays: 7, maxPerCheck: 50, autoReply: false, autoReplyTo: 'leads', maxAutoRepliesPerDay: 20 },
 };
 // sending.* also accepts: ramp [n1,n2,...] (per-day warmup caps), window {start,end} 'HH:MM',
