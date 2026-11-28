@@ -2,6 +2,7 @@
 
 ## Unreleased
 ### Added
+- `replyOnly: true` on a sending mailbox: it keeps answering people who wrote to it, but sends no cold mail or follow-ups and leaves the daily capacity. Someone first emailed from it is held, not re-contacted from another mailbox.
 - Owner notifications: `notify.email` and `leonidas notify`. New replies from people (with their words and what Leonidas did) are emailed once, and a daily summary (sent, replies, opt-outs, bounces) goes out after `notify.dailyAt`.
 - Follow-up sequences: `sequence.followups` ([{afterDays, body}]) and `leonidas followups`. Each step goes to cold mail nobody answered once the previous email is `afterDays` old, threaded under it ("Re:", In-Reply-To/References) from the same mailbox, with `{first}`, `{name}` and `{company}` filled in. Leads who replied, bounced or opted out get nothing more.
 - Reading replies over IMAP (`inbox.accounts`, `leonidas inbox check`, MCP `leo_check_inbox`). Read-only: mail is opened with EXAMINE and fetched with BODY.PEEK. Each account's inbox and spam/junk folders are checked (`checkSpam`, or an explicit `folders` list). Each message is sorted with Harvey's opt-out and escalation rules plus phishing, bounce, auto-reply and newsletter checks. Opt-outs are suppressed, bounces recorded, and a replying lead's pending cold mail is pulled.

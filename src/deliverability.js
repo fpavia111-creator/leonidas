@@ -44,7 +44,7 @@ function mailboxes(cfg) {
     const smtp = { ...base, user: mb.user || mb.email, passwordEnv: mb.passwordEnv || base.passwordEnv };
     for (const k of ['host', 'port', 'secure']) if (mb[k] !== undefined && mb[k] !== '') smtp[k] = mb[k];
     if (mb.port !== undefined && mb.port !== '' && (mb.secure === undefined || mb.secure === '')) smtp.secure = null; // derive TLS mode from this mailbox's port
-    return { email: String(mb.email || '').trim().toLowerCase(), name: mb.name || cfg.sender.name, smtp, dailyCap: typeof mb.dailyCap === 'number' && Number.isFinite(mb.dailyCap) ? mb.dailyCap : s.dailyCap, warmupStartDate: mb.warmupStartDate || (s.warmup && s.warmup.startDate) || '', pooled: true };
+    return { email: String(mb.email || '').trim().toLowerCase(), name: mb.name || cfg.sender.name, smtp, dailyCap: typeof mb.dailyCap === 'number' && Number.isFinite(mb.dailyCap) ? mb.dailyCap : s.dailyCap, warmupStartDate: mb.warmupStartDate || (s.warmup && s.warmup.startDate) || '', pooled: true, replyOnly: mb.replyOnly === true };
   });
 }
 
@@ -53,7 +53,7 @@ function mailboxCap(cfg, mb, today) { return rampedCap(cfg, today, mb.dailyCap, 
 
 /** Sends allowed today across all mailboxes: the sum of their caps, limited by sending.totalDailyCap if set. */
 function poolCapacity(cfg, today) {
-  const sum = mailboxes(cfg).reduce((n, mb) => n + mailboxCap(cfg, mb, today), 0);
+  const sum = mailboxes(cfg).filter(mb => !mb.replyOnly).reduce((n, mb) => n + mailboxCap(cfg, mb, today), 0); // replyOnly mailboxes send no cold mail
   const total = Number(cfg.sending.totalDailyCap) || 0;
   return total > 0 ? Math.min(total, sum) : sum;
 }

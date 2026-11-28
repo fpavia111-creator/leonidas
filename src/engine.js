@@ -184,8 +184,12 @@ class Leadwright {
       // Try mailboxes until one delivers, the recipient fails, or none is left.
       for (;;) {
         // A reply goes out from the mailbox the person wrote to, when that mailbox is in the pool and up.
-        const same = m.replyFrom && mailboxes(this.cfg).find(x => x.email === m.replyFrom && !down.has(x.email));
-        const pick = same ? { mailbox: same } : pickMailbox(this.cfg, { sendLog: this.sendLog(), now: this.now(), to: m.to, exclude: down });
+        // A replyOnly mailbox answers people who wrote to it but sends no cold mail or follow-ups. Someone who
+        // was first emailed from one is held rather than re-contacted from another mailbox.
+        const blocked = new Map(down);
+        if (m.kind !== 'reply') for (const x of mailboxes(this.cfg)) if (x.replyOnly && !blocked.has(x.email)) blocked.set(x.email, 'replyOnly: cold sending paused for this mailbox');
+        const same = m.replyFrom && mailboxes(this.cfg).find(x => x.email === m.replyFrom && !blocked.has(x.email));
+        const pick = same ? { mailbox: same } : pickMailbox(this.cfg, { sendLog: this.sendLog(), now: this.now(), to: m.to, exclude: blocked });
         if (!pick.mailbox) {
           results.push(this._hold(m, [pick.reason], actor));
           if (pick.global) stop = [pick.reason];
@@ -419,7 +423,8 @@ class Leadwright {
       const prev = step === 0 ? first : done[step - 1];
       if (prev.status !== 'sent' || !prev.sentAt || now - Date.parse(prev.sentAt) < Number(steps[step].afterDays) * 86400000) { res.skipped++; continue; }
       const firstName = String(lead.name || '').trim().split(/\s+/)[0] || lead.company || 'there';
-      const body = String(steps[step].body).replace(/\{first\}/g, firstName).replace(/\{name\}/g, lead.name || firstName).replace(/\{company\}/g, lead.company || '');
+      const body = String(steps[step].body).replace(/\{first\}/g, firstName).replace(/\{name\}/g, lead.name || firstName).replace(/\{company\}/g, lead.company || '')
+        .replace(/\{work\}/g, lead.work || (/notary/i.test(lead.industry || '') ? 'notary work' : 'business'));
       const id = x => `<${x.id}@${String(x.from || lead.email).split('@')[1]}>`;
       const refs = [first, ...done].map(id);
       const q = this.queueEmail({ leadId: lead.id, subject: /^re:/i.test(first.subject) ? first.subject : `Re: ${first.subject}`, body, why: `follow-up ${step + 1}: no reply ${steps[step].afterDays}+ days after the previous email (${first.why})`, kind: 'followup', actor });
