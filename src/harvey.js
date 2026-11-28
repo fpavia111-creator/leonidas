@@ -55,6 +55,24 @@ function fromHarvey(h = {}) {
     } else notes.push(`channels.email.provider "${email.provider}" recorded; use sending.transport file|command|smtp`);
   }
   if (email.max_daily_sends !== undefined) s.dailyCap = email.max_daily_sends;
+  if (email.max_hourly_sends !== undefined) s.hourlyCap = email.max_hourly_sends;
+  if (Array.isArray(email.mailboxes) && email.mailboxes.length) {
+    // Harvey always sends from the main mailbox (persona.email) too, ahead of the extra ones.
+    const extra = email.mailboxes.filter(mb => mb && typeof mb === 'object');
+    const off = extra.filter(mb => mb.enabled === false).map(mb => mb.address);
+    s.mailboxes = [persona.email && { email: persona.email }, ...extra.filter(mb => mb.enabled !== false).map(mb => {
+      const o = { email: mb.address || mb.email || '' };
+      if (mb.name) o.name = mb.name;
+      if (mb.password_env) o.passwordEnv = mb.password_env;
+      if (mb.smtp_host) o.host = mb.smtp_host;
+      if (mb.smtp_port) o.port = mb.smtp_port;
+      if (mb.max_daily_sends) o.dailyCap = mb.max_daily_sends; // Harvey: 0 = use channels.email.max_daily_sends
+      return o;
+    })].filter(Boolean);
+    notes.push(`channels.email.mailboxes -> sending.mailboxes (${s.mailboxes.length} mailboxes, the main one first); passwords stay in the env vars named by passwordEnv`);
+    if (off.length) notes.push(`disabled mailboxes left out: ${off.join(', ')}`);
+    if (extra.some(mb => Array.isArray(mb.send_ramp) && mb.send_ramp.length)) notes.push('per-mailbox send_ramp is not carried over (Leonidas ramps per day): set warmupStartDate on new mailboxes instead');
+  }
   if (email.send_unverified !== undefined) s.sendUnverified = !!email.send_unverified;
   if (email.personalize_first_email !== undefined) s.personalizeFirstEmail = !!email.personalize_first_email;
   if (email.max_bounce_rate !== undefined) s.maxBounceRate = email.max_bounce_rate;
@@ -70,4 +88,35 @@ function fromHarvey(h = {}) {
   return { config: cfg, notes };
 }
 
-module.exports = { fromHarvey, parseDurationMinutes, normalizeCompanySize };
+/** Harvey prospect statuses that must not get a first-touch email again. */
+const HARVEY_DONE = ['contacted', 'replied', 'meeting', 'closed', 'lost'];
+
+/**
+ * Convert rows of a Harvey contacts export (harvey export --all: email, first_name, last_name,
+ * company_name, title, website, industry, email_status, status, source, ...) into Leonidas leads.
+ * Opt-outs and invalid addresses go to the do-not-contact list; prospects Harvey already wrote to
+ * or that are in a conversation are left out. Returns { leads, suppress: [{email, reason}], skipped: {why: n} }.
+ */
+function fromHarveyContacts(rows) {
+  const leads = [], suppress = [], skipped = {};
+  const skip = why => { skipped[why] = (skipped[why] || 0) + 1; };
+  for (const r of rows) {
+    const email = String(r.email || '').trim();
+    const status = String(r.status || '').trim().toLowerCase();
+    const es = String(r.email_status || '').trim().toLowerCase();
+    if (!email) { skip('no email'); continue; }
+    if (status === 'opted_out') { suppress.push({ email, reason: 'opted out (Harvey)' }); continue; }
+    if (es === 'invalid' || es === 'bounced') { suppress.push({ email, reason: `${es} address (Harvey)` }); continue; }
+    if (HARVEY_DONE.includes(status)) { skip(`already ${status} in Harvey`); continue; }
+    const lead = {
+      email, name: [r.first_name, r.last_name].filter(x => x && String(x).trim()).join(' '), title: r.title || '', company: r.company_name || r.company || '',
+      industry: r.industry || '', website: r.website || '', source: r.source ? `harvey:${r.source}` : 'harvey',
+    };
+    if (es) lead.verification = es; // "verified" counts as verified; "risky" and "guess" do not
+    if (r.personalization) lead.signals = [r.personalization];
+    leads.push(lead);
+  }
+  return { leads, suppress, skipped };
+}
+
+module.exports = { fromHarvey, fromHarveyContacts, parseDurationMinutes, normalizeCompanySize };

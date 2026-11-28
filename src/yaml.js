@@ -1,13 +1,58 @@
 'use strict';
 /**
  * Minimal, dependency-free YAML subset reader/writer for Leonidas of the Web config files.
- * Supports: block maps, block lists (of scalars or maps), plain / 'single' / "double"
- * quoted scalars (incl. multi-line folded), quoted keys, comments, numbers, booleans, null.
- * Not supported (throws): anchors/aliases, tags, flow collections other than [] / {},
- * block scalars (| and >). Duplicate keys are allowed (last wins) but reported.
+ * Supports: block maps, block lists (of scalars or maps), flow collections ([a, b] and
+ * {k: v}, nested), plain / 'single' / "double" quoted scalars (incl. multi-line folded),
+ * quoted keys, comments, numbers, booleans, null.
+ * Not supported (throws): anchors/aliases, tags, block scalars (| and >).
+ * Duplicate keys are allowed (last wins) but reported.
  */
 
 class YamlError extends Error {}
+
+/** Parse a flow collection such as [50, 100] or {address: a@b.c, port: 465, ramp: [1, 2]}. */
+function flow(s, lineNo) {
+  let i = 0;
+  const err = m => { throw new YamlError(`line ${lineNo}: ${m}`); };
+  const ws = () => { while (i < s.length && /\s/.test(s[i])) i++; };
+  const quoted = () => {
+    const q = s[i]; let j = i + 1;
+    for (; j < s.length; j++) { if (q === '"' && s[j] === '\\') { j++; continue; } if (s[j] === q) { if (q === "'" && s[j + 1] === "'") { j++; continue; } break; } }
+    if (j >= s.length) err('unterminated quoted string in flow collection');
+    const v = scalar(s.slice(i, j + 1), lineNo); i = j + 1; return v;
+  };
+  const plain = stops => { const st = i; while (i < s.length && !stops.includes(s[i])) i++; return s.slice(st, i).trim(); };
+  const value = stops => {
+    ws();
+    if (s[i] === '[') return seq();
+    if (s[i] === '{') return map();
+    if (s[i] === '"' || s[i] === "'") return quoted();
+    const raw = plain(stops);
+    return raw === '' ? null : scalar(raw, lineNo);
+  };
+  // After an item: "," continues (a trailing comma is allowed), the closer ends.
+  const next = close => { ws(); if (s[i] === ',') { i++; ws(); if (s[i] === close) { i++; return false; } return true; } if (s[i] === close) { i++; return false; } return err(`expected "," or "${close}" in flow collection`); };
+  function seq() {
+    i++; const out = []; ws();
+    if (s[i] === ']') { i++; return out; }
+    do out.push(value(',]')); while (next(']'));
+    return out;
+  }
+  function map() {
+    i++; const out = {}; ws();
+    if (s[i] === '}') { i++; return out; }
+    do {
+      ws();
+      const key = s[i] === '"' || s[i] === "'" ? String(quoted()) : plain(':,}');
+      ws(); if (s[i] !== ':') err(`expected ":" after "${key}" in flow map`); i++; ws();
+      out[key] = s[i] === ',' || s[i] === '}' ? null : value(',}');
+    } while (next('}'));
+    return out;
+  }
+  const v = value('');
+  ws(); if (i < s.length) err(`unexpected "${s.slice(i, i + 10)}" after flow collection`);
+  return v;
+}
 
 function stripComment(s) {
   // remove " # comment" outside quotes
@@ -33,7 +78,8 @@ function scalar(raw, lineNo) {
   if (s[0] === '"') {
     try { return JSON.parse(s.replace(/\\\//g, '/')); } catch { throw new YamlError(`line ${lineNo}: bad double-quoted string`); }
   }
-  if (/^[&*!|>]/.test(s) || /^[\[{]/.test(s)) throw new YamlError(`line ${lineNo}: unsupported YAML syntax "${s.slice(0, 20)}"`);
+  if (/^[&*!|>]/.test(s)) throw new YamlError(`line ${lineNo}: unsupported YAML syntax "${s.slice(0, 20)}"`);
+  if (/^[\[{]/.test(s)) return flow(s, lineNo);
   if (s === 'true' || s === 'True') return true;
   if (s === 'false' || s === 'False') return false;
   if (/^[-+]?\d+$/.test(s)) return Number(s);
@@ -103,7 +149,7 @@ function parse(text) {
         if (pos < lines.length && lines[pos].indent > indent) out.push(parseBlock(lines[pos].indent, path + '[]')); else out.push(null);
         continue;
       }
-      const kv = splitKey(rest);
+      const kv = /^[\[{]/.test(rest) ? null : splitKey(rest);
       if (kv) {
         // list item that is a map: treat "- key: v" as a map at indent+2
         const itemIndent = indent + 2;

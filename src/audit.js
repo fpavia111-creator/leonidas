@@ -6,7 +6,7 @@
 const crypto = require('crypto');
 
 const FILE = 'audit.jsonl';
-const ACTIONS = new Set(['lead_added', 'lead_scored', 'queued', 'blocked', 'approved', 'rejected', 'sent', 'send_blocked', 'send_failed', 'bounce', 'suppressed', 'unsuppressed', 'config']);
+const ACTIONS = new Set(['lead_added', 'lead_scored', 'queued', 'blocked', 'approved', 'rejected', 'sent', 'send_blocked', 'send_failed', 'bounce', 'suppressed', 'unsuppressed', 'config', 'inbox_checked', 'reply_received', 'escalated', 'inbox_marked', 'notified']);
 
 function hashRec(r) {
   const { hash, ...rest } = r;

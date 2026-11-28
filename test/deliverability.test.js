@@ -63,11 +63,29 @@ describe('caps, warmup, bounces', () => {
     const r = d.canSend(c, { sendLog: [{ day: '2026-10-20', status: 'sent', to: 'a@q.test' }], bounces: [], email: 'b@q.test', now });
     assert.match(r.reasons.join(), /per-domain/);
   });
+  it('personal mail providers get sending.perFreeMailDomainDailyCap when it is set', () => {
+    const log = Array.from({ length: 3 }, (_, i) => ({ day: '2026-10-20', status: 'sent', to: `p${i}@gmail.com` }));
+    assert.match(d.canSend(cfg({}), { sendLog: log, bounces: [], email: 'new@gmail.com', now }).reasons.join(), /per-domain cap reached for gmail\.com \(3\/3\)/);
+    const c = cfg({ sending: { perFreeMailDomainDailyCap: 100 } });
+    assert.doesNotMatch(d.canSend(c, { sendLog: log, bounces: [], email: 'new@gmail.com', now }).reasons.join(), /per-domain/);
+    const big = Array.from({ length: 100 }, (_, i) => ({ day: '2026-10-20', status: 'sent', to: `p${i}@gmail.com` }));
+    assert.match(d.canSend(c, { sendLog: big, bounces: [], email: 'new@gmail.com', now }).reasons.join(), /gmail\.com \(100\/100, sending\.perFreeMailDomainDailyCap\)/);
+    const co = Array.from({ length: 3 }, (_, i) => ({ day: '2026-10-20', status: 'sent', to: `p${i}@acme.test` }));
+    assert.match(d.canSend(c, { sendLog: co, bounces: [], email: 'new@acme.test', now }).reasons.join(), /per-domain cap reached for acme\.test \(3\/3\)/);
+  });
   it('bounce breaker', () => {
     const c = cfg({ sending: { minSendsForBounceRate: 10 } });
     const log = Array.from({ length: 10 }, (_, i) => ({ day: '2026-10-01', status: 'sent', to: `a${i}@q.test` }));
-    const r = d.canSend(c, { sendLog: log, bounces: [{ type: 'hard' }], email: 'b@r.test', now });
+    const r = d.canSend(c, { sendLog: log, bounces: [{ type: 'hard', email: 'a3@q.test' }], email: 'b@r.test', now });
     assert.match(r.reasons.join(), /paused/);
+  });
+  it('bounce breaker ignores bounces for addresses Leonidas never sent to (imported history)', () => {
+    const c = cfg({ sending: { minSendsForBounceRate: 10 } });
+    const log = Array.from({ length: 10 }, (_, i) => ({ day: '2026-10-01', status: 'sent', to: `a${i}@q.test` }));
+    const old = Array.from({ length: 189 }, (_, i) => ({ type: 'hard', email: `old${i}@x.test` }));
+    assert.deepEqual(d.bounceStats(log, old), { sent: 10, hardBounces: 0, rate: 0 });
+    assert.doesNotMatch(d.canSend(c, { sendLog: log, bounces: old, email: 'b@r.test', now }).reasons.join(), /paused/);
+    assert.equal(d.bounceStats(log, [...old, { type: 'hard', email: 'A1@q.test' }]).hardBounces, 1);
   });
   it('classifyBounce', () => {
     assert.equal(d.classifyBounce('5.1.1', ''), 'hard');
@@ -78,9 +96,26 @@ describe('caps, warmup, bounces', () => {
   it('dns check with fake resolver', async () => {
     const recs = { 'acme.test': [['v=spf1 include:_spf.google.com ~all']], '_dmarc.acme.test': [['v=DMARC1; p=none']] };
     const resolver = { resolveTxt: async n => { if (recs[n]) return recs[n]; throw new Error('ENOTFOUND'); } };
-    const ok = await d.checkDomainAuth('acme.test', { resolver });
+    const ok = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: null });
     assert.deepEqual(ok.problems, []);
-    const bad = await d.checkDomainAuth('none.test', { resolver, dkimSelector: 's1' });
+    const bad = await d.checkDomainAuth('none.test', { resolver, dkimSelector: 's1', fetchImpl: null });
     assert.equal(bad.problems.length, 3);
+  });
+  it('dns check flags a newly registered domain', async () => {
+    const resolver = { resolveTxt: async n => n === 'acme.test' ? [['v=spf1 ~all']] : [['v=DMARC1; p=none']] };
+    const rdap = registered => async url => {
+      if (url === 'https://data.iana.org/rdap/dns.json') return { ok: true, json: async () => ({ services: [[['test', 'example'], ['https://rdap.registry.test/v1/']]] }) };
+      assert.equal(url, 'https://rdap.registry.test/v1/domain/acme.test');
+      return { ok: true, json: async () => ({ events: [{ eventAction: 'registration', eventDate: registered }] }) };
+    };
+    const now = new Date('2026-11-22T00:00:00Z');
+    const young = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: rdap('2026-11-01T00:00:00Z'), now });
+    assert.equal(young.ageDays, 21);
+    assert.match(young.problems.join(), /registered 21 days ago/);
+    const old = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: rdap('2020-01-01T00:00:00Z'), now });
+    assert.deepEqual(old.problems, []);
+    const down = await d.checkDomainAuth('acme.test', { resolver, fetchImpl: async () => { throw new Error('offline'); }, now });
+    assert.equal(down.registered, null);
+    assert.deepEqual(down.problems, []);
   });
 });

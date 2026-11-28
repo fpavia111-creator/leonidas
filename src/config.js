@@ -30,7 +30,7 @@ const DEFAULTS = {
     maxBounceRate: 0.05,
     minSendsForBounceRate: 20,
     timezone: 'America/Chicago', // used when a lead has no timezone of its own
-    allowedDays: ['Tue', 'Wed'],  // cold email goes out ONLY on these weekdays (recipient tz)
+    allowedDays: ['Tue', 'Wed'],  // weekdays cold email may go out (recipient tz and America/Chicago)
   },
   approval: { required: true, allowAgentApproval: false },
   icp: { template: '', industries: [], titles: [], companySize: '', geography: [], minScore: 50 },
@@ -40,10 +40,22 @@ const DEFAULTS = {
   usage: { maxDailyBrainPercent: 100, heartbeatIntervalMinutes: 15, quietHours: { start: '', end: '', timezone: '' } },
   brain: { provider: '' },
   channels: { linkedin: { enabled: false, maxDailyConnections: 0, maxDailyMessages: 0 } },
+  // Reading replies (IMAP). accounts: [{host, port: 993, user, passwordEnv, mailbox: "INBOX"}].
+  // autoReply=false: every reply waits for a human. autoReply=true: replies the agent writes to a
+  // person (never opt-outs, legal/angry mail, bounces, auto-replies, newsletters or phishing) are
+  // approved and sent at once, if the agent's intent is interested/question/objection/wrong_person.
+  // autoReplyTo: "people" = anyone who wrote personally; "leads" = only people Leonidas contacted.
+  // Follow-ups for cold mail nobody answered: [{ afterDays: 7, body: 'Hi {first}, ...' }] (leonidas followups).
+  sequence: { followups: [] },
+  // Owner notifications (leonidas notify): new replies, and a daily summary after dailyAt (HH:MM).
+  notify: { email: '', dailyAt: '' },
+  inbox: { accounts: [], lookbackDays: 7, maxPerCheck: 50, autoReply: false, autoReplyTo: 'leads', maxAutoRepliesPerDay: 20 },
 };
 // sending.* also accepts: ramp [n1,n2,...] (per-day warmup caps), window {start,end} 'HH:MM',
-// minIntervalSeconds, sendUnverified (default false), personalizeFirstEmail (default true).
-Object.assign(DEFAULTS.sending, { ramp: [], window: { start: '', end: '' }, minIntervalSeconds: 0, sendUnverified: false, personalizeFirstEmail: true, provider: '' });
+// minIntervalSeconds, sendUnverified (default false), personalizeFirstEmail (default true),
+// mailboxes [{email, passwordEnv, dailyCap, ...}] (a pool; dailyCap is then per mailbox),
+// totalDailyCap (0 = sum of mailbox caps), hourlyCap (0 = off; counts every mailbox).
+Object.assign(DEFAULTS.sending, { ramp: [], window: { start: '', end: '' }, minIntervalSeconds: 0, sendUnverified: false, personalizeFirstEmail: true, provider: '', mailboxes: [], totalDailyCap: 0, hourlyCap: 0 });
 
 const BOOKING_METHODS = ['reply', 'link', 'ask_preference'];
 
@@ -106,8 +118,17 @@ function validateConfig(cfg) {
   const sm = s.smtp || {};
   if ('password' in sm || 'pass' in sm) e.push('sending.smtp.password must not be stored in config; use the env var named by sending.smtp.passwordEnv');
   if (s.transport === 'smtp') {
-    if (!sm.host) (s.mode === 'send' ? e : w).push('sending.smtp.host is not set');
-    if (![465, 587].includes(Number(sm.port))) w.push(`sending.smtp.port ${sm.port} is unusual; cPanel uses 465 (SSL) or 587 (STARTTLS)`);
+    const pooled = Array.isArray(s.mailboxes) && s.mailboxes.length > 0;
+    if (!pooled) {
+      if (!sm.host) (s.mode === 'send' ? e : w).push('sending.smtp.host is not set');
+      if (![465, 587].includes(Number(sm.port))) w.push(`sending.smtp.port ${sm.port} is unusual; cPanel uses 465 (SSL) or 587 (STARTTLS)`);
+    } else {
+      // Each mailbox may name its own server; check what each one actually resolves to.
+      require('./deliverability').mailboxes(cfg).forEach((mb, i) => {
+        if (!mb.smtp.host) (s.mode === 'send' ? e : w).push(`sending.mailboxes[${i}] has no host: set sending.smtp.host or its own host`);
+        else if (![465, 587].includes(Number(mb.smtp.port))) w.push(`sending.mailboxes[${i}] uses port ${mb.smtp.port}, which is unusual; cPanel uses 465 (SSL) or 587 (STARTTLS)`);
+      });
+    }
     if (sm.allowPlaintext) w.push('sending.smtp.allowPlaintext is true: credentials may cross the network unencrypted (testing only)');
     if (sm.rejectUnauthorized === false) w.push('sending.smtp.rejectUnauthorized is false: TLS certificate is not verified');
   }
@@ -117,9 +138,31 @@ function validateConfig(cfg) {
   if (!isNum(s.maxBounceRate) || s.maxBounceRate < 0 || s.maxBounceRate > 1) e.push('sending.maxBounceRate must be a fraction between 0 and 1');
   for (const k of ['start', 'end']) if (s.window && s.window[k] && !HHMM.test(s.window[k])) e.push(`sending.window.${k} must be HH:MM`);
   if (!isNum(s.minIntervalSeconds) || s.minIntervalSeconds < 0) e.push('sending.minIntervalSeconds must be >= 0');
+  for (const k of ['totalDailyCap', 'hourlyCap']) if (!isNum(s[k]) || s[k] < 0) e.push(`sending.${k} must be a non-negative number (0 = off)`);
+  if (!Array.isArray(s.mailboxes)) e.push('sending.mailboxes must be a list');
+  else {
+    const seen = new Set();
+    s.mailboxes.forEach((entry, i) => {
+      const at = `sending.mailboxes[${i}]`;
+      const mb = typeof entry === 'string' ? { email: entry } : entry;
+      if (!mb || typeof mb !== 'object' || Array.isArray(mb)) return e.push(`${at} must be an email address or a map with at least "email"`);
+      if ('password' in mb || 'pass' in mb) e.push(`${at}.password must not be stored in config; use ${at}.passwordEnv`);
+      const em = String(mb.email || '').trim().toLowerCase();
+      if (!/^[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+$/.test(em)) e.push(`${at}.email must be an email address`);
+      else if (seen.has(em)) e.push(`${at}.email ${em} is listed twice`);
+      seen.add(em);
+      if (mb.passwordEnv !== undefined && !/^[A-Z_][A-Z0-9_]*$/.test(mb.passwordEnv)) e.push(`${at}.passwordEnv must be an environment variable name (A-Z, 0-9, _)`);
+      if (mb.dailyCap !== undefined && (!isNum(mb.dailyCap) || mb.dailyCap < 0)) e.push(`${at}.dailyCap must be a non-negative number`);
+      if (mb.warmupStartDate && !/^\d{4}-\d{2}-\d{2}$/.test(mb.warmupStartDate)) e.push(`${at}.warmupStartDate must be YYYY-MM-DD`);
+      if (/[\r\n"<>]/.test(mb.name || '')) e.push(`${at}.name must not contain quotes, angle brackets or line breaks`);
+    });
+    if (s.mailboxes.length > 1 && !s.hourlyCap) w.push('sending.mailboxes has several mailboxes but sending.hourlyCap is 0: shared hosts limit sends per hour per account (GoDaddy cPanel: 500), so set it below that');
+  }
   const days = (s.allowedDays || []).map(d => String(d).slice(0, 3).toLowerCase());
   const extra = days.filter(d => !['tue', 'wed'].includes(d));
-  if (extra.length) w.push(`sending.allowedDays includes ${extra.join(', ')}: cold email is only ever sent Tue/Wed, those days are ignored`);
+  if (extra.length) w.push(`sending.allowedDays includes ${extra.join(', ')}: cold email gets the most replies Tue/Wed, and other days add volume to the sending domain`);
+  const notDays = days.filter(d => !['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].includes(d));
+  if (notDays.length) w.push(`sending.allowedDays has ${notDays.join(', ')}, which aren't weekdays (Mon..Sun): they are ignored`);
   if (s.sendUnverified) w.push('sending.sendUnverified is true: mail to unverified addresses raises bounce/blacklist risk');
   if (!cfg.approval.required) w.push('approval.required is false: messages can be sent without human review');
   const o = cfg.offer || {};
@@ -135,6 +178,19 @@ function validateConfig(cfg) {
   for (const k of ['start', 'end']) if (q[k] && !HHMM.test(q[k])) e.push(`usage.quietHours.${k} must be HH:MM`);
   if (!!q.start !== !!q.end) e.push('usage.quietHours needs both start and end');
   if (cfg.sender.physicalAddress === '' ) w.push('sender.physicalAddress is empty (required before sending)');
+  const ib = cfg.inbox || {};
+  if (!Array.isArray(ib.accounts)) e.push('inbox.accounts must be a list');
+  else ib.accounts.forEach((acct, i) => {
+    if (!acct || typeof acct !== 'object' || Array.isArray(acct)) { e.push(`inbox.accounts[${i}] must be an object`); return; }
+    if ('password' in acct || 'pass' in acct) e.push(`inbox.accounts[${i}].password must not be stored in config; use passwordEnv`);
+    if (!acct.host) e.push(`inbox.accounts[${i}].host is not set`);
+    if (!acct.user) e.push(`inbox.accounts[${i}].user is not set`);
+    if (acct.allowPlaintext) w.push(`inbox.accounts[${i}].allowPlaintext is true: the password may cross the network unencrypted (testing only)`);
+  });
+  if (!['people', 'leads'].includes(ib.autoReplyTo)) e.push('inbox.autoReplyTo must be "people" or "leads"');
+  if (!isNum(ib.lookbackDays) || ib.lookbackDays < 1) e.push('inbox.lookbackDays must be at least 1');
+  if (!isNum(ib.maxAutoRepliesPerDay) || ib.maxAutoRepliesPerDay < 0) e.push('inbox.maxAutoRepliesPerDay must be >= 0');
+  if (ib.autoReply) w.push(`inbox.autoReply is true: the agent's answers to ${ib.autoReplyTo === 'people' ? 'anyone who writes personally' : 'leads who reply'} are sent without human review (opt-outs, legal/angry mail, bounces and phishing are never answered)`);
   return { errors: e, warnings: w };
 }
 
@@ -146,12 +202,22 @@ function saveConfig(cfg, dir = stateDir()) {
 /** Problems that block *sending* (drafting is always allowed). */
 function sendReadiness(cfg) {
   const p = [];
+  const mbs = cfg.sending.mailboxes;
+  const pooled = Array.isArray(mbs) && mbs.length > 0;
   if (cfg.sending.mode !== 'send') p.push('sending.mode is "draft" (set it to "send" explicitly to allow delivery)');
-  if (!cfg.sender.email) p.push('sender.email is not set');
+  if (mbs !== undefined && mbs !== null && !Array.isArray(mbs)) p.push('sending.mailboxes must be a list');
+  if (!cfg.sender.email && !pooled) p.push('sender.email is not set');
   if (!cfg.sender.physicalAddress) p.push('sender.physicalAddress is not set (CAN-SPAM requires a valid postal address)');
   if (!cfg.compliance.unsubscribe.url && !cfg.compliance.unsubscribe.mailto) p.push('no unsubscribe url or mailto configured');
   if (cfg.sending.transport === 'command' && !cfg.sending.command) p.push('sending.transport is "command" but sending.command is empty');
-  if (cfg.sending.transport === 'smtp') p.push(...require('./smtp').smtpProblems(cfg));
+  const smtp = require('./smtp');
+  if (!pooled) { if (cfg.sending.transport === 'smtp') p.push(...smtp.smtpProblems(cfg)); }
+  else {
+    // A pool keeps sending while at least one mailbox is usable; broken ones are skipped and shown in status.
+    const bad = smtp.mailboxProblems(cfg);
+    const usable = require('./deliverability').mailboxes(cfg).filter(mb => !bad.has(mb.email)).length;
+    if (!usable) p.push(`no usable mailbox: ${[...bad.values()].map(x => x[0]).join('; ')}`);
+  }
   return p;
 }
 

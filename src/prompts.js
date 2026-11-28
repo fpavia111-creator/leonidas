@@ -42,6 +42,11 @@ function writerPrompt({ lead, icp, sender, kind = 'cold', cfg }) {
     `- Subject line MUST be under ${SUBJECT_MAX_EXCLUSIVE} characters (${SUBJECT_MAX_EXCLUSIVE - 1} max), lowercase-casual is fine, no "Re:"/"Fwd:" on first touch, no exclamation marks.`,
     `- Body MUST be under ${BODY_MAX_WORDS_EXCLUSIVE} words (${BODY_MAX_WORDS_EXCLUSIVE - 1} max, not counting the footer). Count them; if over, cut. Plain text, at most one link, no merge tags left unrendered.`,
     '- Reference one specific, true observation about the company. No invented facts.',
+    ...(kind === 'cold' ? [
+      `- Greet ${lead.name ? `${String(lead.name).trim().split(/\s+/)[0]} by first name` : 'the business by name'}; never "Hi there", "Dear Team" or "Hello friend".`,
+      '- The first sentence says why you are writing to THIS business (what you saw and where), so a stranger knows how you found them.',
+      '- Make one concrete offer (what it is and, if a price is configured, the price). Do not only ask a question.',
+    ] : []),
     `- Never use: ${BANNED_PHRASES.slice(0, 12).join(', ')}, ...`,
     '- Do NOT write the unsubscribe/address footer; Leonidas appends it.',
     `Lead facts: ${JSON.stringify({ industry: lead.industry, signals: lead.signals || [], notes: lead.notes || '' })}`,

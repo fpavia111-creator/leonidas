@@ -39,6 +39,14 @@ describe('safe defaults', () => {
     const inst = lw(); queued(inst);
     assert.deepEqual(inst.sendApproved(), []);
   });
+  it('approval.required=false approves mail that passes the gate as it is queued, and it sends', () => {
+    const inst = lw({ over: { approval: { required: false } } });
+    const { msg } = queued(inst);
+    assert.equal(msg.status, 'approved'); assert.equal(msg.approvedBy, 'config (approval.required=false)');
+    assert.equal(inst.sendApproved()[0].status, 'sent');
+    const bad = queued(lw({ over: { approval: { required: false } } }), { subject: 'Re: hi' }).msg;
+    assert.equal(bad.status, 'blocked', 'gate failures are never auto-approved');
+  });
 });
 
 describe('pipeline', () => {
@@ -52,6 +60,19 @@ describe('pipeline', () => {
     assert.match(eml, /List-Unsubscribe: <mailto:unsub@acme.test/);
     assert.match(eml, /100 Main St/);
     assert.match(eml, /Subject: booking on your site/);
+  });
+  it('sent mail carries Date, Message-ID and MIME headers, and encodes non-ASCII headers', () => {
+    const inst = lw({ over: { sender: { name: 'José' } } });
+    const { msg } = queued(inst, { subject: 'café booking' });
+    inst.approve(msg.id);
+    assert.equal(inst.sendApproved()[0].status, 'sent');
+    const eml = fs.readFileSync(path.join(inst.dir, 'sent', `${msg.id}.eml`), 'utf8');
+    assert.match(eml, /^Date: Tue, 20 Oct 2026 15:00:00 \+0000\r\n/);
+    assert.match(eml, new RegExp(`\\r\\nMessage-ID: <${msg.id}@acme\\.test>\\r\\n`));
+    assert.match(eml, /\r\nMIME-Version: 1\.0\r\n/);
+    assert.match(eml, /\r\nContent-Transfer-Encoding: 8bit\r\n/);
+    assert.match(eml, /\r\nFrom: =\?UTF-8\?B\?Sm9zw6k=\?= <kurt@acme\.test>\r\n/);
+    assert.match(eml, /\r\nSubject: =\?UTF-8\?B\?Y2Fmw6kgYm9va2luZw==\?=\r\n/);
   });
   it('Saturday send is scheduled for next Tuesday, then sends on Tuesday', () => {
     const inst = lw({ now: SAT }); const { msg } = queued(inst);
